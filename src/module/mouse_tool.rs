@@ -1,7 +1,5 @@
 use crate::module::router::Router;
 use ratatui::layout::Rect;
-use ratatui::prelude::Color;
-use std::cell::Ref;
 
 //아래 데이터는 근사치 이며 이후 프레임워크 업데이트에 따라 교체되거나 삭제될 코드.
 static X_SYNC: f32 = 9.84998; //9.84998
@@ -9,7 +7,7 @@ static Y_SYNC: u16 = 22;
 
 pub fn is_rects_hovered(layout: Rect, mouse_pos: (u32, u32)) -> bool {
     let pos_x_min = layout.x as f32 * X_SYNC;
-    let pos_x_max = (layout.x + layout.width) as f32 * X_SYNC;
+    let pos_x_max = (layout.x + layout.width + 1) as f32 * X_SYNC;
     let pos_y_min = layout.y * Y_SYNC;
     let pos_y_max = layout.y + layout.height * Y_SYNC;
 
@@ -76,6 +74,26 @@ pub fn calc_header_button_ranges(router: &Router, width: u16) -> Vec<(usize, usi
         result.push((start, end));
         offset += w;
     }
+    result
+}
 
+pub fn calc_topdown_list_button_ranges(
+    layout: Rect,
+    item_num: usize,
+    hight: usize,
+) -> Vec<(usize, usize)> {
+    let mut result = Vec::new();
+
+    // info!("1. x is {:?}",layout.x);
+    // info!("2. y is {:?}",layout.y);
+    // info!("3. width is {:?}",layout.width);
+    // info!("4. height is {:?}",layout.height);
+
+    for index in 0..item_num {
+        let top = layout.y as usize + index + 1; //for margin
+        result.push((top, top + hight));
+    }
+
+    // info!("{:?}", result);
     result
 }

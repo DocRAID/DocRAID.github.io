@@ -1,6 +1,5 @@
 use crate::module::mouse_tool::{calc_header_button_ranges, is_points_hovered};
 use crate::module::router::Router;
-use color_eyre::owo_colors::OwoColorize;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Style, Stylize},
@@ -80,7 +79,7 @@ impl App {
 
         frame.render_widget(header_paragraph, layout[0]);
         // Content///////////////////////////////////////////////////////
-        router.show_page(frame, layout[1]);
+        router.show_page(frame, layout[1], self);
     }
 
     pub fn key_handle_events(&self, key_event: KeyEvent) {
@@ -90,6 +89,7 @@ impl App {
             KeyCode::Right => *counter = counter.saturating_add(1),
             _ => {}
         }
+        // info!("{:?}",counter)
     }
     pub fn mouse_handle_events(&self, mouse_event: MouseEvent) {
         let mut mouse_pos = self.mouse_pos.borrow_mut();

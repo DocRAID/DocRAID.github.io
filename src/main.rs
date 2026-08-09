@@ -1,6 +1,6 @@
 use std::{io, rc::Rc};
 
-use ratatui::{style::Stylize, Terminal};
+use ratatui::{Terminal};
 
 use ratzilla::{web_sys::window, DomBackend, WebRenderer};
 

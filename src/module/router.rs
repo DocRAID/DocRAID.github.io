@@ -1,8 +1,9 @@
+use crate::app::App;
 use crate::pages::blog_page::blog_page;
 use crate::pages::intro_page::intro_page;
 use crate::pages::not_found_page::not_found_page;
 use ratatui::layout::Rect;
-use ratatui::{style::Stylize, Frame};
+use ratatui::{Frame};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pages {
@@ -44,7 +45,7 @@ impl Pages {
 #[derive(Clone, Debug)]
 pub struct Router {
     pub pages: Pages,
-    sub_query: Option<String>,
+    pub sub_query: Option<String>,
 }
 
 impl Router {
@@ -75,14 +76,14 @@ impl Router {
         [Pages::Intro, Pages::Blog, Pages::About].to_vec()
     }
 
-    pub fn show_page(&self, frame: &mut Frame, layout: Rect) {
+    pub fn show_page(&self, frame: &mut Frame, layout: Rect, app: &App) {
         match self.pages {
             Pages::Intro => {
                 intro_page(self.label(), frame, layout);
             }
             Pages::About => {}
             Pages::Blog => {
-                blog_page(self.label(), frame, layout);
+                blog_page(self.label(), frame, layout, app);
             }
             Pages::Err404 => not_found_page(self.label(), frame, layout),
         }
