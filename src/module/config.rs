@@ -28,22 +28,54 @@ impl NotionConfig {
     }
 }
 
-/// Pull the 32-digit Notion page id out of a public site URL.
+/// Pull the Notion page id off the end of a public site URL.
+///
+/// The last path segment is either a bare 32-digit id or `Slug-32hex`.
+/// Only that trailing id is used — hex letters in the slug (`Open`,
+/// `Study`, …) must not be mixed in.
 pub fn page_id_from_url(url: &str) -> Option<String> {
     let last = url.split(['/', '?']).rfind(|segment| !segment.is_empty())?;
-    let hex: String = last.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if hex.len() < 32 {
-        return None;
+
+    if last.len() >= 36 {
+        let tail = &last[last.len() - 36..];
+        if is_dashed_uuid(tail) {
+            return Some(tail.to_ascii_lowercase());
+        }
     }
-    let id = hex.get(hex.len() - 32..)?;
-    Some(format!(
+
+    if last.len() >= 32 {
+        let tail = &last[last.len() - 32..];
+        let preceded_ok = last.len() == 32 || last.as_bytes()[last.len() - 33] == b'-';
+        if preceded_ok && tail.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(format_page_id(&tail.to_ascii_lowercase()));
+        }
+    }
+
+    None
+}
+
+fn is_dashed_uuid(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 36
+        && b[8] == b'-'
+        && b[13] == b'-'
+        && b[18] == b'-'
+        && b[23] == b'-'
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => true,
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+fn format_page_id(id: &str) -> String {
+    format!(
         "{}-{}-{}-{}-{}",
         &id[0..8],
         &id[8..12],
         &id[12..16],
         &id[16..20],
         &id[20..32]
-    ))
+    )
 }
 
 #[cfg(test)]
@@ -77,6 +109,15 @@ mod tests {
         assert_eq!(
             page_id_from_url(url).as_deref(),
             Some("158ec5eb-3d22-807e-a341-c9e5604113c3")
+        );
+    }
+
+    #[test]
+    fn ignores_hex_letters_in_the_slug() {
+        let url = "https://limdongju.notion.site/Open-Study-house-3beec5eb3d2280ef97a0ff6f6fd65b36";
+        assert_eq!(
+            page_id_from_url(url).as_deref(),
+            Some("3beec5eb-3d22-80ef-97a0-ff6f6fd65b36")
         );
     }
 }

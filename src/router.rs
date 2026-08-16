@@ -85,7 +85,7 @@ impl Router {
     }
 
     pub fn tag_href(tag: &str) -> String {
-        format!("/blog/{}", tag.replace('/', "-"))
+        format!("/blog/{}", crate::module::scraper::tag_slug(tag))
     }
 }
 
