@@ -85,7 +85,7 @@ impl Router {
     }
 
     pub fn tag_href(tag: &str) -> String {
-        format!("/blog/{tag}")
+        format!("/blog/{}", tag.replace('/', "-"))
     }
 }
 
@@ -125,5 +125,6 @@ mod tests {
     #[test]
     fn tag_href_is_absolute() {
         assert_eq!(Router::tag_href("gcc"), "/blog/gcc");
+        assert_eq!(Router::tag_href("C/C++"), "/blog/C-C++");
     }
 }

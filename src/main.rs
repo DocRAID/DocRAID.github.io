@@ -11,6 +11,7 @@ use crate::app::App;
 
 mod app;
 mod content;
+mod module;
 mod mouse;
 mod router;
 mod theme;
@@ -25,6 +26,8 @@ fn main() -> io::Result<()> {
     let window = window().expect("window");
     let path = window.location().pathname().expect("pathname");
     let state = Rc::new(App::new(path, window));
+    // Static host only: scrape Notion from the browser, not a server.
+    crate::content::refresh();
 
     let mouse_state = Rc::clone(&state);
     terminal.on_mouse_event(move |event| {

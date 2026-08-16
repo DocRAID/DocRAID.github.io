@@ -1,5 +1,5 @@
 use super::{page_panel, FrameCtx};
-use crate::content::TAGS;
+use crate::content;
 use crate::mouse::{list_row_y, CellSpan};
 use crate::router::Router;
 use crate::theme;
@@ -13,7 +13,7 @@ const BODY: &str = "my blog site. powered by ratatui\n\
              ";
 
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
-    let [sidebar, content] =
+    let [sidebar, body] =
         Layout::horizontal([Constraint::Percentage(15), Constraint::Percentage(85)]).areas(area);
 
     let tags_block = Block::bordered()
@@ -21,14 +21,15 @@ pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         .title_alignment(Alignment::Center)
         .border_type(BorderType::Plain);
 
-    let tag_list = List::new(TAGS.iter().copied())
+    let tags = content::tags();
+    let tag_list = List::new(tags.iter().map(String::as_str))
         .block(tags_block)
         .bg(theme::BG)
         .highlight_style(Style::new().fg(theme::HOVER).add_modifier(Modifier::BOLD))
         .highlight_spacing(HighlightSpacing::WhenSelected);
 
     let mut tags_state = ListState::default();
-    for (index, tag) in TAGS.iter().enumerate() {
+    for (index, tag) in tags.iter().enumerate() {
         let (y0, y1) = list_row_y(sidebar, index, 1);
         let x0 = sidebar.x;
         let x1 = sidebar.x.saturating_add(sidebar.width);
@@ -39,6 +40,6 @@ pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         }
     }
 
-    frame.render_widget(page_panel(&ctx.router.title(), BODY), content);
+    frame.render_widget(page_panel(&ctx.router.title(), BODY), body);
     frame.render_stateful_widget(tag_list, sidebar, &mut tags_state);
 }
