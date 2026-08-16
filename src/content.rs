@@ -1,8 +1,7 @@
 /// Sidebar tags as a string array.
 ///
-/// Filled in the browser on each page load. There is no backend: the
-/// scraper module fetches the Notion page from WASM and caches the
-/// H2 titles in memory for this visit.
+/// Filled in the browser on each page load from every `notion.json`
+/// page whose `role` is `"tags"`.
 pub fn tags() -> Vec<String> {
     crate::module::scraper::current_tags()
 }

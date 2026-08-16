@@ -1,18 +1,17 @@
-//! Browser-only Notion scrape. This site is static WASM with no origin
-//! server, so every visit uses `window.fetch` and keeps the result in
-//! memory. Notion's own endpoints omit CORS headers, which blocks a
-//! direct read of [`NOTION_PAGE_URL`]; the public Splitbee reader
-//! returns that same page's block map and allows cross-origin GET.
+//! Browser-only Notion scrape. Page URLs live in `notion.json`.
+//!
+//! This site is static WASM with no origin server, so every visit uses
+//! `window.fetch` and keeps the result in memory. Notion's own endpoints
+//! omit CORS headers; the public Splitbee reader returns each configured
+//! page's block map and allows cross-origin GET.
 
+use crate::module::config::{page_id_from_url, NotionConfig, CONFIG_PATH, EMBEDDED_CONFIG};
 use serde_json::Value;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestCache, RequestInit, RequestMode, Response};
-
-/// Public Notion study-log page whose heading-2 sections become sidebar tags.
-pub const NOTION_PAGE_URL: &str = "https://limdongju.notion.site/158ec5eb3d2280218426f12e40729e48";
-pub const NOTION_PAGE_ID: &str = "158ec5eb-3d22-8021-8426-f12e40729e48";
 
 const NOTION_LIVE_API: &str = "https://notion-api.splitbee.io/v1/page/";
 
@@ -34,10 +33,7 @@ pub fn start_fetch() {
     wasm_bindgen_futures::spawn_local(async {
         match fetch_h2_tags().await {
             Ok(titles) => {
-                log::info!(
-                    "fetched {} notion tags from {NOTION_PAGE_URL}",
-                    titles.len()
-                );
+                log::info!("fetched {} notion tags from config", titles.len());
                 TAGS.with(|tags| *tags.borrow_mut() = titles);
             }
             Err(err) => log::error!("notion tag fetch failed: {err}"),
@@ -46,28 +42,64 @@ pub fn start_fetch() {
 }
 
 async fn fetch_h2_tags() -> Result<Vec<String>, String> {
-    let json = fetch_page_json().await?;
-    Ok(extract_h2_titles(&json))
+    let config = load_config().await?;
+    let mut titles = Vec::new();
+    let mut any_tag_page = false;
+
+    for page in config.tag_pages() {
+        any_tag_page = true;
+        let page_id = page_id_from_url(&page.url)
+            .ok_or_else(|| format!("could not parse Notion page id from {}", page.url))?;
+        let json = fetch_page_json(&page_id).await?;
+        titles.extend(extract_h2_titles(&json, &page_id));
+    }
+
+    if !any_tag_page {
+        log::warn!("notion.json has no pages with role \"tags\"");
+    }
+
+    let mut seen = HashSet::new();
+    titles.retain(|title| seen.insert(title.clone()));
+    Ok(titles)
 }
 
-async fn fetch_page_json() -> Result<String, String> {
-    let compact_id = NOTION_PAGE_ID.replace('-', "");
+async fn load_config() -> Result<NotionConfig, String> {
+    match fetch_text(CONFIG_PATH).await {
+        Ok(text) => match NotionConfig::parse(&text) {
+            Ok(config) => Ok(config),
+            Err(err) => {
+                log::warn!("falling back to embedded notion.json ({err})");
+                NotionConfig::parse(EMBEDDED_CONFIG)
+            }
+        },
+        Err(err) => {
+            log::warn!("falling back to embedded {CONFIG_PATH} ({err})");
+            NotionConfig::parse(EMBEDDED_CONFIG)
+        }
+    }
+}
+
+async fn fetch_page_json(page_id: &str) -> Result<String, String> {
+    let compact_id = page_id.replace('-', "");
     let cache_bust = js_sys::Date::now() as u64;
     let url = format!("{NOTION_LIVE_API}{compact_id}?t={cache_bust}");
+    fetch_text(&url).await
+}
 
+async fn fetch_text(url: &str) -> Result<String, String> {
     let opts = RequestInit::new();
     opts.set_method("GET");
     opts.set_mode(RequestMode::Cors);
     opts.set_cache(RequestCache::NoStore);
 
-    let request = Request::new_with_str_and_init(&url, &opts).map_err(js_err)?;
+    let request = Request::new_with_str_and_init(url, &opts).map_err(js_err)?;
     let window = web_sys::window().ok_or_else(|| "missing window".to_string())?;
     let response = JsFuture::from(window.fetch_with_request(&request))
         .await
         .map_err(js_err)?;
     let response: Response = response.dyn_into().map_err(js_err)?;
     if !response.ok() {
-        return Err(format!("http {}", response.status()));
+        return Err(format!("http {} from {url}", response.status()));
     }
     let text = JsFuture::from(response.text().map_err(js_err)?)
         .await
@@ -81,7 +113,7 @@ fn js_err(err: wasm_bindgen::JsValue) -> String {
 }
 
 /// Walk the page's child list in document order and collect H2 text.
-pub fn extract_h2_titles(json: &str) -> Vec<String> {
+pub fn extract_h2_titles(json: &str, page_id: &str) -> Vec<String> {
     let Ok(root) = serde_json::from_str::<Value>(json) else {
         log::error!("notion response is not valid JSON");
         return Vec::new();
@@ -94,7 +126,7 @@ pub fn extract_h2_titles(json: &str) -> Vec<String> {
     }
 
     let mut titles = Vec::new();
-    for block_id in page_child_ids(blocks) {
+    for block_id in page_child_ids(blocks, page_id) {
         let value = block_value(&blocks[&block_id]);
         let Some(kind) = value["type"].as_str() else {
             continue;
@@ -119,8 +151,8 @@ fn block_map(root: &Value) -> &Value {
     }
 }
 
-fn page_child_ids(blocks: &Value) -> Vec<String> {
-    let page = block_value(&blocks[NOTION_PAGE_ID]);
+fn page_child_ids(blocks: &Value, page_id: &str) -> Vec<String> {
+    let page = block_value(&blocks[page_id]);
     if let Some(ids) = page["content"].as_array() {
         return ids
             .iter()
@@ -135,7 +167,7 @@ fn page_child_ids(blocks: &Value) -> Vec<String> {
         .filter_map(|(id, block)| {
             let value = block_value(block);
             let kind = value["type"].as_str()?;
-            (H2_TYPES.contains(&kind) && id != NOTION_PAGE_ID).then(|| id.clone())
+            (H2_TYPES.contains(&kind) && id != page_id).then(|| id.clone())
         })
         .collect()
 }
@@ -167,17 +199,19 @@ fn rich_text(title: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_h2_titles, NOTION_PAGE_ID};
+    use super::extract_h2_titles;
+
+    const PAGE_ID: &str = "158ec5eb-3d22-8021-8426-f12e40729e48";
 
     fn fixture() -> String {
         format!(
             r#"{{
               "recordMap": {{
                 "block": {{
-                  "{NOTION_PAGE_ID}": {{
+                  "{PAGE_ID}": {{
                     "value": {{
                       "value": {{
-                        "id": "{NOTION_PAGE_ID}",
+                        "id": "{PAGE_ID}",
                         "type": "page",
                         "content": [
                           "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
@@ -220,10 +254,10 @@ mod tests {
     fn splitbee_fixture() -> String {
         format!(
             r#"{{
-              "{NOTION_PAGE_ID}": {{
+              "{PAGE_ID}": {{
                 "value": {{
                   "value": {{
-                    "id": "{NOTION_PAGE_ID}",
+                    "id": "{PAGE_ID}",
                     "type": "page",
                     "content": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"]
                   }}
@@ -243,16 +277,16 @@ mod tests {
 
     #[test]
     fn extracts_header_and_sub_header_in_order() {
-        assert_eq!(extract_h2_titles(&fixture()), ["OS", "C/C++"]);
+        assert_eq!(extract_h2_titles(&fixture(), PAGE_ID), ["OS", "C/C++"]);
     }
 
     #[test]
     fn extracts_from_unwrapped_block_map() {
-        assert_eq!(extract_h2_titles(&splitbee_fixture()), ["DB"]);
+        assert_eq!(extract_h2_titles(&splitbee_fixture(), PAGE_ID), ["DB"]);
     }
 
     #[test]
     fn ignores_invalid_json() {
-        assert!(extract_h2_titles("not-json").is_empty());
+        assert!(extract_h2_titles("not-json", PAGE_ID).is_empty());
     }
 }
