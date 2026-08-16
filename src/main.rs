@@ -1,33 +1,34 @@
-use std::{io, rc::Rc};
+//! WASM TUI blog rendered with Ratatui and Ratzilla.
 
-use ratatui::{Terminal};
+use std::io;
+use std::rc::Rc;
 
-use ratzilla::{web_sys::window, DomBackend, WebRenderer};
+use ratatui::Terminal;
+use ratzilla::web_sys::window;
+use ratzilla::{DomBackend, WebRenderer};
 
 use crate::app::App;
 
 mod app;
-mod module;
-mod pages;
+mod content;
+mod mouse;
+mod router;
+mod theme;
+mod ui;
 
 fn main() -> io::Result<()> {
-    console_log::init().unwrap();
+    console_log::init().expect("console logger");
+
     let backend = DomBackend::new()?;
     let terminal = Terminal::new(backend)?;
 
-    let window = window().expect("No window");
-    let path = window.location().pathname().expect("No path");
-
+    let window = window().expect("window");
+    let path = window.location().pathname().expect("pathname");
     let state = Rc::new(App::new(path, window));
 
-    let key_event_state = Rc::clone(&state);
-    let mouse_event_state = Rc::clone(&state);
-    terminal.on_key_event(move |key_event| {
-        key_event_state.key_handle_events(key_event);
-    });
-
-    terminal.on_mouse_event(move |mouse_event| {
-        mouse_event_state.mouse_handle_events(mouse_event);
+    let mouse_state = Rc::clone(&state);
+    terminal.on_mouse_event(move |event| {
+        mouse_state.handle_mouse(event);
     });
 
     let render_state = Rc::clone(&state);

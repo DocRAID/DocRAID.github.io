@@ -1,16 +1,8 @@
-use ratatui::layout::{Alignment, Rect};
-use ratatui::prelude::{Color, Stylize};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use super::{render_page, FrameCtx};
+use ratatui::layout::Rect;
 use ratatui::Frame;
 
-pub fn not_found_page(label: String, frame: &mut Frame, layout: Rect) {
-    let block = Block::bordered()
-        .title(format!("{{ {} }}", label))
-        .title_alignment(Alignment::Center)
-        .border_type(BorderType::Plain);
-
-    // self.router
-    let text = r#"
+const BODY: &str = r#"
 
 
 
@@ -33,11 +25,6 @@ pub fn not_found_page(label: String, frame: &mut Frame, layout: Rect) {
 +=======================================================================================+
 "#;
 
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .fg(Color::White)
-        .bg(crate::app::BG_RGB)
-        .centered();
-
-    frame.render_widget(paragraph, layout);
+pub fn render(ctx: &FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
+    render_page(frame, area, &ctx.router.title(), BODY);
 }
