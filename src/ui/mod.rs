@@ -18,6 +18,8 @@ pub struct FrameCtx<'a> {
     pub router: &'a Router,
     pub mouse: &'a MouseState,
     pub hits: &'a mut HitMap,
+    pub scroll: u16,
+    pub scroll_metrics: Option<&'a mut (u16, u16)>,
 }
 
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>) {

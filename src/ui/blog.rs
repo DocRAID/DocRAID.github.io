@@ -7,7 +7,10 @@ use crate::theme;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, HighlightSpacing, List, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, HighlightSpacing, List, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
@@ -165,6 +168,7 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(outer, area);
 
     let Some(segments) = content::post_segments(post_id) else {
+        report_scroll(ctx, 0, inner.height);
         frame.render_widget(
             Paragraph::new("(loading…)").fg(theme::FG).bg(theme::BG),
             inner,
@@ -172,6 +176,7 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         return;
     };
     if segments.is_empty() {
+        report_scroll(ctx, 0, inner.height);
         frame.render_widget(
             Paragraph::new("(no content)").fg(theme::FG).bg(theme::BG),
             inner,
@@ -179,53 +184,91 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         return;
     }
 
-    let mut constraints = Vec::new();
-    let mut remaining = inner.height;
-    for (index, segment) in segments.iter().enumerate() {
-        if remaining == 0 {
-            break;
-        }
-        if index > 0 {
-            let gap = 1.min(remaining);
-            constraints.push(Constraint::Length(gap));
-            remaining = remaining.saturating_sub(gap);
-        }
-        if remaining == 0 {
-            break;
-        }
-        let height = segment_height(segment).min(remaining);
-        constraints.push(Constraint::Length(height));
-        remaining = remaining.saturating_sub(height);
-    }
+    let content_height = content_height(&segments);
+    let viewport = inner.height;
+    report_scroll(ctx, content_height, viewport);
+    let offset = ctx.scroll.min(content_height.saturating_sub(viewport));
+    let body_area = Rect {
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
 
-    let slots = Layout::vertical(constraints).split(inner);
-    let mut slot = 0;
+    let mut cursor = 0_u16;
     for (index, segment) in segments.iter().enumerate() {
-        if slot >= slots.len() {
-            break;
-        }
         if index > 0 {
-            slot += 1;
-            if slot >= slots.len() {
-                break;
-            }
+            cursor = cursor.saturating_add(1);
         }
+        let content_y = cursor;
+        let height = segment_height(segment);
+        cursor = cursor.saturating_add(height);
+        let Some(dest) = visible_rect(body_area, content_y, height, offset, viewport) else {
+            continue;
+        };
         match segment {
             PostSegment::Text(text) => {
                 frame.render_widget(
                     Paragraph::new(text.as_str())
                         .wrap(Wrap { trim: false })
+                        .scroll((offset.saturating_sub(content_y), 0))
                         .fg(theme::FG)
                         .bg(theme::BG),
-                    slots[slot],
+                    dest,
                 );
             }
             PostSegment::Code(code) => {
-                render_code_block(ctx, frame, slots[slot], code);
+                render_code_block(ctx, frame, dest, code);
             }
         }
-        slot += 1;
     }
+
+    if content_height > viewport {
+        let mut state = ScrollbarState::new(content_height.saturating_sub(viewport) as usize)
+            .position(offset as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).style(Style::new().fg(theme::DIM)),
+            inner,
+            &mut state,
+        );
+    }
+}
+
+fn report_scroll(ctx: &mut FrameCtx<'_>, content_height: u16, viewport: u16) {
+    if let Some(metrics) = ctx.scroll_metrics.as_mut() {
+        **metrics = (content_height, viewport);
+    }
+}
+
+fn content_height(segments: &[PostSegment]) -> u16 {
+    let mut height = 0_u16;
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            height = height.saturating_add(1);
+        }
+        height = height.saturating_add(segment_height(segment));
+    }
+    height
+}
+
+fn visible_rect(
+    area: Rect,
+    content_y: u16,
+    height: u16,
+    offset: u16,
+    viewport: u16,
+) -> Option<Rect> {
+    let start = content_y.max(offset);
+    let end = content_y
+        .saturating_add(height)
+        .min(offset.saturating_add(viewport));
+    if end <= start {
+        return None;
+    }
+    Some(Rect {
+        x: area.x,
+        y: area.y.saturating_add(start.saturating_sub(offset)),
+        width: area.width,
+        height: end.saturating_sub(start),
+    })
 }
 
 fn segment_height(segment: &PostSegment) -> u16 {
@@ -334,6 +377,15 @@ mod tests {
             Some(("TEST-contents", "2025.12.12"))
         );
         assert_eq!(split_trailing_date("TEST-contents"), None);
+    }
+
+    #[test]
+    fn visible_slice_clips_to_viewport() {
+        let area = Rect::new(0, 10, 20, 8);
+        let dest = super::visible_rect(area, 12, 6, 10, 8).unwrap();
+        assert_eq!(dest.y, 12);
+        assert_eq!(dest.height, 6);
+        assert!(super::visible_rect(area, 0, 2, 10, 8).is_none());
     }
 
     #[test]
