@@ -13,7 +13,20 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+/// Hide the tag/post sidebar below this many terminal columns.
+const COMPACT_WIDTH: u16 = 72;
+
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
+    if is_compact(area) {
+        if let Some(post_id) = ctx.router.post() {
+            content::ensure_post(post_id);
+            render_post_body(ctx, frame, area);
+        } else {
+            render_post_list(ctx, frame, area);
+        }
+        return;
+    }
+
     let [sidebar, body] =
         Layout::horizontal([Constraint::Percentage(15), Constraint::Percentage(85)]).areas(area);
 
@@ -25,6 +38,10 @@ pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         render_tag_list(ctx, frame, sidebar);
         render_post_list(ctx, frame, body);
     }
+}
+
+fn is_compact(area: Rect) -> bool {
+    area.width < COMPACT_WIDTH
 }
 
 fn render_tag_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
