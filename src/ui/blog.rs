@@ -1,20 +1,26 @@
 use super::FrameCtx;
 use crate::content;
-use crate::module::scraper::tag_slug;
+use crate::module::scraper::{same_page_id, tag_slug};
 use crate::mouse::{list_row_y, CellSpan};
 use crate::router::Router;
 use crate::theme;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::widgets::{Block, BorderType, HighlightSpacing, List, ListState};
+use ratatui::widgets::{Block, BorderType, HighlightSpacing, List, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     let [sidebar, body] =
         Layout::horizontal([Constraint::Percentage(15), Constraint::Percentage(85)]).areas(area);
 
-    render_tag_list(ctx, frame, sidebar);
-    render_post_list(ctx, frame, body);
+    if let Some(post_id) = ctx.router.post() {
+        content::ensure_post(post_id);
+        render_category_posts(ctx, frame, sidebar);
+        render_post_body(ctx, frame, body);
+    } else {
+        render_tag_list(ctx, frame, sidebar);
+        render_post_list(ctx, frame, body);
+    }
 }
 
 fn render_tag_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
@@ -94,6 +100,71 @@ fn render_post_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     }
 
     frame.render_stateful_widget(post_list, area, &mut posts_state);
+}
+
+fn render_category_posts(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
+    let posts = content::posts(ctx.router.slug());
+    let inner_width = area.width.saturating_sub(2);
+    let labels: Vec<String> = if posts.is_empty() {
+        vec!["(no posts)".to_string()]
+    } else {
+        posts
+            .iter()
+            .map(|post| format_post_label(&post.title, inner_width))
+            .collect()
+    };
+
+    let list = List::new(labels)
+        .block(
+            Block::bordered()
+                .title("{{ posts }}")
+                .title_alignment(Alignment::Center)
+                .border_type(BorderType::Plain),
+        )
+        .bg(theme::BG)
+        .highlight_style(Style::new().fg(theme::HOVER))
+        .highlight_spacing(HighlightSpacing::WhenSelected);
+
+    let selected_post = ctx.router.post();
+    let mut hovered = None;
+    let mut selected = None;
+    for (index, post) in posts.iter().enumerate() {
+        let (y0, y1) = list_row_y(area, index, 1);
+        let span = CellSpan::new(area.x, area.x.saturating_add(area.width), y0, y1);
+        ctx.hits.add(span, post.href.clone());
+        if ctx.mouse.hits_rect(area) && ctx.mouse.hits(span) {
+            hovered = Some(index);
+        }
+        if selected_post.is_some_and(|id| same_page_id(id, &post.id)) {
+            selected = Some(index);
+        }
+    }
+    let mut state = ListState::default();
+    state.select(hovered.or(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
+    let post_id = ctx.router.post().unwrap_or("");
+    let title = content::posts(ctx.router.slug())
+        .into_iter()
+        .find(|post| same_page_id(&post.id, post_id))
+        .map(|post| post.title)
+        .unwrap_or_else(|| "post".to_string());
+    let body = content::post_text(post_id).unwrap_or_else(|| "(loading…)".to_string());
+
+    let paragraph = Paragraph::new(body)
+        .block(
+            Block::bordered()
+                .title(format!("{{ {title} }}"))
+                .title_alignment(Alignment::Center)
+                .border_type(BorderType::Plain),
+        )
+        .wrap(Wrap { trim: false })
+        .fg(theme::FG)
+        .bg(theme::BG);
+
+    frame.render_widget(paragraph, area);
 }
 
 /// Split `Title - date` so the date is shown as `(date)` on the right.

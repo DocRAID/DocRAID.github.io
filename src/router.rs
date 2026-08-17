@@ -44,11 +44,12 @@ impl fmt::Display for Route {
     }
 }
 
-/// Parsed location: a route plus an optional trailing slug (`/blog/linux`).
+/// Parsed location: `/blog/{tag}` or `/blog/{tag}/{post}`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Router {
     route: Route,
     slug: Option<String>,
+    post: Option<String>,
 }
 
 impl Router {
@@ -56,9 +57,13 @@ impl Router {
 
     pub fn parse(path: impl AsRef<str>) -> Self {
         let path = path.as_ref();
-        let mut parts = path.trim_start_matches('/').splitn(2, '/');
+        let mut parts = path.trim_start_matches('/').split('/');
         let first = parts.next().unwrap_or("");
         let second = parts
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string);
+        let third = parts
             .next()
             .filter(|segment| !segment.is_empty())
             .map(str::to_string);
@@ -66,6 +71,7 @@ impl Router {
         Self {
             route: Route::from_segment(first),
             slug: second,
+            post: third,
         }
     }
 
@@ -75,6 +81,10 @@ impl Router {
 
     pub fn slug(&self) -> Option<&str> {
         self.slug.as_deref()
+    }
+
+    pub fn post(&self) -> Option<&str> {
+        self.post.as_deref()
     }
 
     pub fn title(&self) -> String {
@@ -112,7 +122,16 @@ mod tests {
         let router = Router::parse("/blog/linux");
         assert_eq!(router.route(), Route::Blog);
         assert_eq!(router.slug(), Some("linux"));
+        assert_eq!(router.post(), None);
         assert_eq!(router.title(), "Blog -> [linux]");
+    }
+
+    #[test]
+    fn parse_blog_with_post() {
+        let router = Router::parse("/blog/TEST1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5");
+        assert_eq!(router.route(), Route::Blog);
+        assert_eq!(router.slug(), Some("TEST1"));
+        assert_eq!(router.post(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5"));
     }
 
     #[test]
