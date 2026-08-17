@@ -3,7 +3,7 @@
 //! H2 headings are tags. Pages nested under those headings (including
 //! inside toggle / collapsible blocks) are the blog content pages.
 
-use crate::module::config::{page_id_from_url, NotionConfig, EMBEDDED_CONFIG};
+use crate::module::config::{dashed_id, page_id_from_url, NotionConfig, EMBEDDED_CONFIG};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -300,9 +300,11 @@ async fn resolve_missing(blocks: &mut Map<String, Value>, root_id: &str) {
 }
 
 async fn fetch_post_plain(page_id: &str) -> Result<String, String> {
-    let mut blocks = fetch_blocks(page_id).await?;
-    resolve_missing(&mut blocks, page_id).await;
-    let text = extract_plain_text(&Value::Object(blocks), page_id);
+    let root_id = dashed_id(page_id);
+    log::info!("fetching post body {root_id}");
+    let mut blocks = fetch_blocks(&root_id).await?;
+    resolve_missing(&mut blocks, &root_id).await;
+    let text = extract_plain_text(&Value::Object(blocks), &root_id);
     if text.trim().is_empty() {
         Ok("(no content)".to_string())
     } else {
@@ -523,7 +525,7 @@ fn missing_content_ids(blocks: &Map<String, Value>, root_id: &str) -> Vec<String
             Some(block) => {
                 let value = block_value(block);
                 let kind = value["type"].as_str().unwrap_or("");
-                if kind == "page" && id != root_id {
+                if kind == "page" && !same_page_id(&id, root_id) {
                     continue;
                 }
                 if H2_TYPES.contains(&kind) || kind == "toggle" || CONTAINER_TYPES.contains(&kind) {
@@ -567,13 +569,47 @@ fn block_map_owned(root: Value) -> Option<Map<String, Value>> {
     }
 }
 
+fn resolve_block_key(blocks: &Value, page_id: &str) -> String {
+    if blocks.get(page_id).is_some() {
+        return page_id.to_string();
+    }
+    let dashed = dashed_id(page_id);
+    if blocks.get(&dashed).is_some() {
+        return dashed;
+    }
+    let compact = page_id.replace('-', "");
+    if let Some(key) = blocks.as_object().and_then(|map| {
+        map.keys()
+            .find(|key| key.replace('-', "") == compact)
+            .cloned()
+    }) {
+        return key;
+    }
+    dashed
+}
+
 fn page_child_ids(blocks: &Value, page_id: &str) -> Vec<String> {
-    let page = block_value(&blocks[page_id]);
+    let key = resolve_block_key(blocks, page_id);
+    let page = block_value(&blocks[&key]);
     if let Some(ids) = page["content"].as_array() {
         return ids
             .iter()
             .filter_map(|id| id.as_str().map(str::to_owned))
             .collect();
+    }
+
+    let owned: Vec<String> = blocks
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, block)| {
+            let value = block_value(block);
+            let parent = value["parent_id"].as_str()?;
+            same_page_id(parent, &key).then(|| id.clone())
+        })
+        .collect();
+    if !owned.is_empty() {
+        return owned;
     }
 
     blocks
@@ -583,7 +619,7 @@ fn page_child_ids(blocks: &Value, page_id: &str) -> Vec<String> {
         .filter_map(|(id, block)| {
             let value = block_value(block);
             let kind = value["type"].as_str()?;
-            (H2_TYPES.contains(&kind) && id != page_id).then(|| id.clone())
+            (H2_TYPES.contains(&kind) && !same_page_id(id, &key)).then(|| id.clone())
         })
         .collect()
 }
@@ -765,5 +801,8 @@ mod tests {
         );
         let text = super::extract_plain_text(&serde_json::from_str(&json).unwrap(), PAGE_ID);
         assert_eq!(text, "created: 2025.12.12\nhello");
+        let compact = PAGE_ID.replace('-', "");
+        let again = super::extract_plain_text(&serde_json::from_str(&json).unwrap(), &compact);
+        assert_eq!(again, "created: 2025.12.12\nhello");
     }
 }

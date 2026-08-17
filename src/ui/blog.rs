@@ -152,7 +152,6 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         .map(|post| post.title)
         .unwrap_or_else(|| "post".to_string());
     let body = content::post_text(post_id).unwrap_or_else(|| "(loading…)".to_string());
-
     let paragraph = Paragraph::new(body)
         .block(
             Block::bordered()
