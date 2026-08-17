@@ -1,0 +1,51 @@
+mod about;
+mod blog;
+mod header;
+mod intro;
+mod not_found;
+
+use crate::mouse::{HitMap, MouseState};
+use crate::router::{Route, Router};
+use crate::theme;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::Stylize;
+use ratatui::text::Text;
+use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::Frame;
+
+/// Per-frame view of app state that widgets may read or write.
+pub struct FrameCtx<'a> {
+    pub router: &'a Router,
+    pub mouse: &'a MouseState,
+    pub hits: &'a mut HitMap,
+}
+
+pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>) {
+    let [header, body] =
+        Layout::vertical([Constraint::Length(3), Constraint::Max(60)]).areas(frame.area());
+
+    header::render(ctx, frame, header);
+    match ctx.router.route() {
+        Route::Intro => intro::render(ctx, frame, body),
+        Route::About => about::render(ctx, frame, body),
+        Route::Blog => blog::render(ctx, frame, body),
+        Route::NotFound => not_found::render(ctx, frame, body),
+    }
+}
+
+fn page_panel<'a>(title: &str, text: impl Into<Text<'a>>) -> Paragraph<'a> {
+    Paragraph::new(text)
+        .block(
+            Block::bordered()
+                .title(format!("{{ {title} }}"))
+                .title_alignment(Alignment::Center)
+                .border_type(BorderType::Plain),
+        )
+        .fg(theme::FG)
+        .bg(theme::BG)
+        .centered()
+}
+
+fn render_page(frame: &mut Frame<'_>, area: Rect, title: &str, text: impl Into<Text<'static>>) {
+    frame.render_widget(page_panel(title, text), area);
+}

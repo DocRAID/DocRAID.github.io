@@ -1,33 +1,52 @@
-use std::{io, rc::Rc};
+//! WASM TUI blog rendered with Ratatui and Ratzilla.
 
-use ratatui::{Terminal};
+use std::io;
+use std::rc::Rc;
 
-use ratzilla::{web_sys::window, DomBackend, WebRenderer};
+use ratatui::Terminal;
+use ratzilla::web_sys::window;
+use ratzilla::{DomBackend, WebRenderer};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 
 use crate::app::App;
 
 mod app;
+mod content;
 mod module;
-mod pages;
+mod mouse;
+mod router;
+mod theme;
+mod ui;
 
 fn main() -> io::Result<()> {
-    console_log::init().unwrap();
+    console_log::init().expect("console logger");
+
     let backend = DomBackend::new()?;
     let terminal = Terminal::new(backend)?;
 
-    let window = window().expect("No window");
-    let path = window.location().pathname().expect("No path");
+    let window = window().expect("window");
+    let path = window.location().pathname().expect("pathname");
+    let state = Rc::new(App::new(path, window.clone()));
+    // Static host only: scrape Notion from the browser, not a server.
+    crate::content::refresh();
 
-    let state = Rc::new(App::new(path, window));
-
-    let key_event_state = Rc::clone(&state);
-    let mouse_event_state = Rc::clone(&state);
-    terminal.on_key_event(move |key_event| {
-        key_event_state.key_handle_events(key_event);
+    let pop_state = Rc::clone(&state);
+    let on_pop = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+        if let Some(path) = current_path() {
+            pop_state.set_path(path);
+        }
     });
+    if let Err(err) =
+        window.add_event_listener_with_callback("popstate", on_pop.as_ref().unchecked_ref())
+    {
+        log::error!("failed to listen for popstate: {err:?}");
+    }
+    on_pop.forget();
 
-    terminal.on_mouse_event(move |mouse_event| {
-        mouse_event_state.mouse_handle_events(mouse_event);
+    let mouse_state = Rc::clone(&state);
+    terminal.on_mouse_event(move |event| {
+        mouse_state.handle_mouse(event);
     });
 
     let render_state = Rc::clone(&state);
@@ -36,4 +55,8 @@ fn main() -> io::Result<()> {
     });
 
     Ok(())
+}
+
+fn current_path() -> Option<String> {
+    window()?.location().pathname().ok()
 }
