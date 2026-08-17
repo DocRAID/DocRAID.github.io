@@ -6,6 +6,8 @@ use std::rc::Rc;
 use ratatui::Terminal;
 use ratzilla::web_sys::window;
 use ratzilla::{DomBackend, WebRenderer};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 
 use crate::app::App;
 
@@ -25,9 +27,22 @@ fn main() -> io::Result<()> {
 
     let window = window().expect("window");
     let path = window.location().pathname().expect("pathname");
-    let state = Rc::new(App::new(path, window));
+    let state = Rc::new(App::new(path, window.clone()));
     // Static host only: scrape Notion from the browser, not a server.
     crate::content::refresh();
+
+    let pop_state = Rc::clone(&state);
+    let on_pop = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+        if let Some(path) = current_path() {
+            pop_state.set_path(path);
+        }
+    });
+    if let Err(err) =
+        window.add_event_listener_with_callback("popstate", on_pop.as_ref().unchecked_ref())
+    {
+        log::error!("failed to listen for popstate: {err:?}");
+    }
+    on_pop.forget();
 
     let mouse_state = Rc::clone(&state);
     terminal.on_mouse_event(move |event| {
@@ -40,4 +55,8 @@ fn main() -> io::Result<()> {
     });
 
     Ok(())
+}
+
+fn current_path() -> Option<String> {
+    window()?.location().pathname().ok()
 }

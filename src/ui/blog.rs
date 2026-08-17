@@ -72,7 +72,11 @@ fn render_post_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     let post_list = List::new(labels)
         .block(body_block)
         .bg(theme::BG)
-        .highlight_style(Style::new().fg(theme::HOVER).add_modifier(Modifier::REVERSED))
+        .highlight_style(
+            Style::new()
+                .fg(theme::HOVER)
+                .add_modifier(Modifier::REVERSED),
+        )
         .highlight_spacing(HighlightSpacing::WhenSelected);
 
     let mut posts_state = ListState::default();

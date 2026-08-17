@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub const EMBEDDED_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/notion.json"));
 
 /// Root-absolute so `/blog/linux` does not resolve this to `/blog/notion.json`.
+#[allow(dead_code)]
 pub const CONFIG_PATH: &str = "/notion.json";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

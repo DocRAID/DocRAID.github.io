@@ -3,7 +3,9 @@
 //! H2 headings are tags. Pages nested under those headings (including
 //! inside toggle / collapsible blocks) are the blog content pages.
 
-use crate::module::config::{page_id_from_url, NotionConfig, CONFIG_PATH, EMBEDDED_CONFIG};
+use crate::module::config::{page_id_from_url, NotionConfig, EMBEDDED_CONFIG};
+use futures::future::join_all;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -24,20 +26,25 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 const MAX_CHILD_FETCHES: usize = 32;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentPage {
     pub title: String,
     pub href: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagSection {
     pub tag: String,
     pub pages: Vec<ContentPage>,
 }
 
+const CACHE_KEY: &str = "tui_blog.catalog.v2";
+const REVALIDATE_MS: i32 = 45_000;
+
 thread_local! {
     static CATALOG: RefCell<Vec<TagSection>> = const { RefCell::new(Vec::new()) };
+    static REVALIDATE_BUSY: RefCell<bool> = const { RefCell::new(false) };
+    static POLL_STARTED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 pub fn current_tags() -> Vec<String> {
@@ -77,63 +84,141 @@ pub fn tag_slug(tag: &str) -> String {
 }
 
 pub fn start_fetch() {
+    if catalog_is_empty() {
+        if let Some(cached) = load_session_cache() {
+            log::info!("showing cached notion catalog ({} tags)", cached.len());
+            apply_catalog(cached);
+        }
+    }
+    spawn_revalidate();
+    ensure_poller();
+}
+
+fn catalog_is_empty() -> bool {
+    CATALOG.with(|catalog| catalog.borrow().is_empty())
+}
+
+fn apply_catalog(catalog: Vec<TagSection>) {
+    CATALOG.with(|slot| *slot.borrow_mut() = catalog);
+}
+
+fn spawn_revalidate() {
+    if REVALIDATE_BUSY.with(|busy| {
+        if *busy.borrow() {
+            true
+        } else {
+            *busy.borrow_mut() = true;
+            false
+        }
+    }) {
+        return;
+    }
     wasm_bindgen_futures::spawn_local(async {
-        match fetch_catalog().await {
+        let result = fetch_catalog().await;
+        REVALIDATE_BUSY.with(|busy| *busy.borrow_mut() = false);
+        match result {
             Ok(catalog) => {
-                log::info!(
-                    "fetched {} tags / {} posts from Notion",
-                    catalog.len(),
-                    catalog
-                        .iter()
-                        .map(|section| section.pages.len())
-                        .sum::<usize>()
-                );
-                CATALOG.with(|slot| *slot.borrow_mut() = catalog);
+                let changed = CATALOG.with(|slot| *slot.borrow() != catalog);
+                if changed {
+                    log::info!(
+                        "notion catalog updated ({} tags / {} posts)",
+                        catalog.len(),
+                        catalog
+                            .iter()
+                            .map(|section| section.pages.len())
+                            .sum::<usize>()
+                    );
+                    save_session_cache(&catalog);
+                    apply_catalog(catalog);
+                } else {
+                    log::info!("notion catalog unchanged");
+                    save_session_cache(&catalog);
+                }
             }
             Err(err) => log::error!("notion catalog fetch failed: {err}"),
         }
     });
 }
 
-async fn fetch_catalog() -> Result<Vec<TagSection>, String> {
-    let config = load_config().await?;
-    let mut catalog = Vec::new();
-    let mut any_tag_page = false;
+fn ensure_poller() {
+    if POLL_STARTED.with(|started| {
+        if *started.borrow() {
+            true
+        } else {
+            *started.borrow_mut() = true;
+            false
+        }
+    }) {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
 
-    for page in config.tag_pages() {
-        any_tag_page = true;
+    let on_tick = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(spawn_revalidate);
+    if let Err(err) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        on_tick.as_ref().unchecked_ref(),
+        REVALIDATE_MS,
+    ) {
+        log::error!("failed to start notion poller: {err:?}");
+    }
+    on_tick.forget();
+
+    if let Some(document) = window.document() {
+        let on_visible = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+            move |_event: web_sys::Event| {
+                if document_is_visible() {
+                    spawn_revalidate();
+                }
+            },
+        );
+        if let Err(err) = document.add_event_listener_with_callback(
+            "visibilitychange",
+            on_visible.as_ref().unchecked_ref(),
+        ) {
+            log::error!("failed to listen for visibilitychange: {err:?}");
+        }
+        on_visible.forget();
+    }
+}
+
+fn document_is_visible() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .map(|document| document.hidden())
+        .map(|hidden| !hidden)
+        .unwrap_or(true)
+}
+
+async fn fetch_catalog() -> Result<Vec<TagSection>, String> {
+    let config = load_config()?;
+    let sources: Vec<_> = config.tag_pages().cloned().collect();
+    if sources.is_empty() {
+        log::warn!("notion.json has no pages with role \"tags\"");
+        return Ok(Vec::new());
+    }
+
+    let jobs = sources.into_iter().map(|page| async move {
         let page_id = page_id_from_url(&page.url)
             .ok_or_else(|| format!("could not parse Notion page id from {}", page.url))?;
         let mut blocks = fetch_blocks(&page_id).await?;
         resolve_missing(&mut blocks, &page_id).await;
-        catalog.extend(extract_catalog_from_blocks(
+        Ok::<_, String>(extract_catalog_from_blocks(
             &Value::Object(blocks),
             &page_id,
             &site_origin(&page.url),
-        ));
-    }
+        ))
+    });
 
-    if !any_tag_page {
-        log::warn!("notion.json has no pages with role \"tags\"");
+    let mut catalog = Vec::new();
+    for result in join_all(jobs).await {
+        catalog.extend(result?);
     }
-
     Ok(dedupe_sections(catalog))
 }
 
-async fn load_config() -> Result<NotionConfig, String> {
-    match fetch_text(CONFIG_PATH).await {
-        Ok(text) => match NotionConfig::parse(&text) {
-            Ok(config) => Ok(config),
-            Err(err) => {
-                log::warn!("falling back to embedded notion.json ({err})");
-                NotionConfig::parse(EMBEDDED_CONFIG)
-            }
-        },
-        Err(err) => {
-            log::warn!("falling back to embedded {CONFIG_PATH} ({err})");
-            NotionConfig::parse(EMBEDDED_CONFIG)
-        }
-    }
+fn load_config() -> Result<NotionConfig, String> {
+    NotionConfig::parse(EMBEDDED_CONFIG)
 }
 
 async fn resolve_missing(blocks: &mut Map<String, Value>, root_id: &str) {
@@ -142,25 +227,29 @@ async fn resolve_missing(blocks: &mut Map<String, Value>, root_id: &str) {
         if fetched >= MAX_CHILD_FETCHES {
             break;
         }
-        let missing = missing_content_ids(blocks, root_id);
+        let mut missing = missing_content_ids(blocks, root_id);
         if missing.is_empty() {
             break;
         }
-        let Some(id) = missing.into_iter().next() else {
-            break;
-        };
-        match fetch_blocks(&id).await {
-            Ok(extra) => {
-                for (key, value) in extra {
-                    blocks.entry(key).or_insert(value);
+        missing.truncate(MAX_CHILD_FETCHES - fetched);
+        let jobs = missing.into_iter().map(|id| async move {
+            let result = fetch_blocks(&id).await;
+            (id, result)
+        });
+        for (id, result) in join_all(jobs).await {
+            fetched += 1;
+            match result {
+                Ok(extra) => {
+                    for (key, value) in extra {
+                        blocks.entry(key).or_insert(value);
+                    }
+                }
+                Err(err) => {
+                    log::warn!("skipping nested Notion block {id}: {err}");
+                    blocks.insert(id, Value::Null);
                 }
             }
-            Err(err) => {
-                log::warn!("skipping nested Notion block {id}: {err}");
-                blocks.insert(id, Value::Null);
-            }
         }
-        fetched += 1;
     }
 }
 
@@ -182,7 +271,7 @@ async fn fetch_text(url: &str) -> Result<String, String> {
     let opts = RequestInit::new();
     opts.set_method("GET");
     opts.set_mode(RequestMode::Cors);
-    opts.set_cache(RequestCache::NoStore);
+    opts.set_cache(RequestCache::Reload);
 
     let request = Request::new_with_str_and_init(url, &opts).map_err(js_err)?;
     let window = web_sys::window().ok_or_else(|| "missing window".to_string())?;
@@ -202,6 +291,36 @@ async fn fetch_text(url: &str) -> Result<String, String> {
 
 fn js_err(err: wasm_bindgen::JsValue) -> String {
     err.as_string().unwrap_or_else(|| format!("{err:?}"))
+}
+
+#[derive(Serialize, Deserialize)]
+struct CachedCatalog {
+    saved_at: f64,
+    sections: Vec<TagSection>,
+}
+
+fn load_session_cache() -> Option<Vec<TagSection>> {
+    let window = web_sys::window()?;
+    let storage = window.session_storage().ok().flatten()?;
+    let raw = storage.get_item(CACHE_KEY).ok().flatten()?;
+    let cached: CachedCatalog = serde_json::from_str(&raw).ok()?;
+    Some(cached.sections)
+}
+
+fn save_session_cache(sections: &[TagSection]) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.session_storage() else {
+        return;
+    };
+    let cached = CachedCatalog {
+        saved_at: js_sys::Date::now(),
+        sections: sections.to_vec(),
+    };
+    if let Ok(raw) = serde_json::to_string(&cached) {
+        let _ = storage.set_item(CACHE_KEY, &raw);
+    }
 }
 
 #[cfg(test)]
