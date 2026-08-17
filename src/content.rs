@@ -1,4 +1,4 @@
-use crate::module::scraper::{self, ContentPage};
+use crate::module::scraper::{self, ContentPage, PostSegment};
 
 /// Sidebar tags as a string array.
 ///
@@ -18,9 +18,9 @@ pub fn ensure_post(page_id: &str) {
     scraper::request_post(page_id);
 }
 
-/// Plain text of a scraped post, if the fetch has finished.
-pub fn post_text(page_id: &str) -> Option<String> {
-    scraper::current_post_text(page_id)
+/// Scraped post body, if the fetch has finished.
+pub fn post_segments(page_id: &str) -> Option<Vec<PostSegment>> {
+    scraper::current_post_segments(page_id)
 }
 
 /// Start a browser fetch of the Notion catalog. Call once per site load.

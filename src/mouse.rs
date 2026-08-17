@@ -78,9 +78,15 @@ pub struct HitMap {
 }
 
 #[derive(Clone, Debug)]
+pub enum HitAction {
+    Go(String),
+    Copy(String),
+}
+
+#[derive(Clone, Debug)]
 struct HitTarget {
     span: CellSpan,
-    href: String,
+    action: HitAction,
 }
 
 impl HitMap {
@@ -91,16 +97,31 @@ impl HitMap {
     pub fn add(&mut self, span: CellSpan, href: impl Into<String>) {
         self.regions.push(HitTarget {
             span,
-            href: href.into(),
+            action: HitAction::Go(href.into()),
         });
     }
 
-    pub fn href_at(&self, mouse: (u32, u32)) -> Option<&str> {
+    pub fn add_copy(&mut self, span: CellSpan, text: impl Into<String>) {
+        self.regions.push(HitTarget {
+            span,
+            action: HitAction::Copy(text.into()),
+        });
+    }
+
+    pub fn action_at(&self, mouse: (u32, u32)) -> Option<&HitAction> {
         self.regions
             .iter()
             .rev()
             .find(|region| region.span.contains(mouse))
-            .map(|region| region.href.as_str())
+            .map(|region| &region.action)
+    }
+
+    #[cfg(test)]
+    pub fn href_at(&self, mouse: (u32, u32)) -> Option<&str> {
+        match self.action_at(mouse) {
+            Some(HitAction::Go(href)) => Some(href.as_str()),
+            _ => None,
+        }
     }
 }
 

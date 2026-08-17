@@ -39,6 +39,13 @@ pub struct TagSection {
     pub pages: Vec<ContentPage>,
 }
 
+/// A run of post body content. Whitespace inside each string is kept as-is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PostSegment {
+    Text(String),
+    Code(String),
+}
+
 const CACHE_KEY: &str = "tui_blog.catalog.v3";
 const REVALIDATE_MS: i32 = 45_000;
 
@@ -46,7 +53,7 @@ thread_local! {
     static CATALOG: RefCell<Vec<TagSection>> = const { RefCell::new(Vec::new()) };
     static REVALIDATE_BUSY: RefCell<bool> = const { RefCell::new(false) };
     static POLL_STARTED: RefCell<bool> = const { RefCell::new(false) };
-    static POST_BODIES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static POST_BODIES: RefCell<HashMap<String, Vec<PostSegment>>> = RefCell::new(HashMap::new());
     static POST_FETCHING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
@@ -108,24 +115,25 @@ pub fn request_post(page_id: &str) {
             busy.borrow_mut().remove(&id);
         });
         match result {
-            Ok(text) => {
+            Ok(segments) => {
                 POST_BODIES.with(|bodies| {
-                    bodies.borrow_mut().insert(id, text);
+                    bodies.borrow_mut().insert(id, segments);
                 });
             }
             Err(err) => {
                 log::error!("post scrape failed: {err}");
                 POST_BODIES.with(|bodies| {
-                    bodies
-                        .borrow_mut()
-                        .insert(id, format!("(failed to load)\n{err}"));
+                    bodies.borrow_mut().insert(
+                        id,
+                        vec![PostSegment::Text(format!("(failed to load)\n{err}"))],
+                    );
                 });
             }
         }
     });
 }
 
-pub fn current_post_text(page_id: &str) -> Option<String> {
+pub fn current_post_segments(page_id: &str) -> Option<Vec<PostSegment>> {
     let id = page_id.replace('-', "");
     POST_BODIES.with(|bodies| bodies.borrow().get(&id).cloned())
 }
@@ -299,16 +307,16 @@ async fn resolve_missing(blocks: &mut Map<String, Value>, root_id: &str) {
     }
 }
 
-async fn fetch_post_plain(page_id: &str) -> Result<String, String> {
+async fn fetch_post_plain(page_id: &str) -> Result<Vec<PostSegment>, String> {
     let root_id = dashed_id(page_id);
     log::info!("fetching post body {root_id}");
     let mut blocks = fetch_blocks(&root_id).await?;
     resolve_missing(&mut blocks, &root_id).await;
-    let text = extract_plain_text(&Value::Object(blocks), &root_id);
-    if text.trim().is_empty() {
-        Ok("(no content)".to_string())
+    let segments = extract_segments(&Value::Object(blocks), &root_id);
+    if segments.is_empty() {
+        Ok(vec![PostSegment::Text("(no content)".to_string())])
     } else {
-        Ok(text)
+        Ok(segments)
     }
 }
 
@@ -459,26 +467,23 @@ fn collect_pages(
     }
 }
 
-fn extract_plain_text(root: &Value, page_id: &str) -> String {
+fn extract_segments(root: &Value, page_id: &str) -> Vec<PostSegment> {
     let blocks = block_map(root);
     if !blocks.is_object() {
-        return String::new();
+        return Vec::new();
     }
-    let mut lines = Vec::new();
-    collect_plain_text(
+    let mut segments = Vec::new();
+    collect_segments(
         blocks,
         &page_child_ids(blocks, page_id),
         page_id,
-        &mut lines,
+        &mut segments,
     );
-    lines.join("\n")
+    merge_text_segments(segments)
 }
 
-fn collect_plain_text(blocks: &Value, ids: &[String], root_id: &str, out: &mut Vec<String>) {
+fn collect_segments(blocks: &Value, ids: &[String], root_id: &str, out: &mut Vec<PostSegment>) {
     for id in ids {
-        if same_page_id(id, root_id) && id != ids.first().map(String::as_str).unwrap_or("") {
-            continue;
-        }
         let value = block_value(&blocks[id]);
         let Some(kind) = value["type"].as_str() else {
             continue;
@@ -486,28 +491,42 @@ fn collect_plain_text(blocks: &Value, ids: &[String], root_id: &str, out: &mut V
         if kind == "page" && !same_page_id(id, root_id) {
             continue;
         }
-        if let Some(text) = block_plain_text(kind, value) {
-            out.push(text);
+        if kind == "code" {
+            out.push(PostSegment::Code(block_source_text(value)));
+        } else if let Some(text) = block_display_text(kind, value) {
+            out.push(PostSegment::Text(text));
         }
         if kind == "toggle" || CONTAINER_TYPES.contains(&kind) || H2_TYPES.contains(&kind) {
-            collect_plain_text(blocks, &child_content_ids(value), root_id, out);
+            collect_segments(blocks, &child_content_ids(value), root_id, out);
         }
     }
 }
 
-fn block_plain_text(kind: &str, value: &Value) -> Option<String> {
-    let text = rich_text(&value["properties"]["title"]);
+fn block_source_text(value: &Value) -> String {
+    block_raw_text(&value["properties"]["title"])
+}
+
+fn block_display_text(kind: &str, value: &Value) -> Option<String> {
+    let text = block_raw_text(&value["properties"]["title"]);
     match kind {
         "text" | "quote" | "callout" | "header" | "sub_header" | "sub_sub_header"
-        | "bulleted_list" | "numbered_list" | "to_do" | "toggle" | "code" => {
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        }
+        | "bulleted_list" | "numbered_list" | "to_do" | "toggle" => Some(text),
         _ => None,
     }
+}
+
+fn merge_text_segments(segments: Vec<PostSegment>) -> Vec<PostSegment> {
+    let mut out = Vec::new();
+    for segment in segments {
+        match (out.last_mut(), segment) {
+            (Some(PostSegment::Text(existing)), PostSegment::Text(next)) => {
+                existing.push('\n');
+                existing.push_str(&next);
+            }
+            (_, other) => out.push(other),
+        }
+    }
+    out
 }
 
 fn missing_content_ids(blocks: &Map<String, Value>, root_id: &str) -> Vec<String> {
@@ -643,6 +662,10 @@ fn block_value(block: &Value) -> &Value {
 }
 
 fn rich_text(title: &Value) -> String {
+    block_raw_text(title)
+}
+
+fn block_raw_text(title: &Value) -> String {
     let Some(parts) = title.as_array() else {
         return String::new();
     };
@@ -799,10 +822,45 @@ mod tests {
               }}
             }}"#
         );
-        let text = super::extract_plain_text(&serde_json::from_str(&json).unwrap(), PAGE_ID);
-        assert_eq!(text, "created: 2025.12.12\nhello");
-        let compact = PAGE_ID.replace('-', "");
-        let again = super::extract_plain_text(&serde_json::from_str(&json).unwrap(), &compact);
-        assert_eq!(again, "created: 2025.12.12\nhello");
+        let segments = super::extract_segments(&serde_json::from_str(&json).unwrap(), PAGE_ID);
+        assert_eq!(
+            segments,
+            [super::PostSegment::Text(
+                "created: 2025.12.12\nhello".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn keeps_code_and_indentation() {
+        let json = format!(
+            r#"{{
+              "recordMap": {{
+                "block": {{
+                  "{PAGE_ID}": {{
+                    "value": {{
+                      "value": {{
+                        "type": "page",
+                        "content": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"]
+                      }}
+                    }}
+                  }},
+                  "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1": {{
+                    "value": {{
+                      "value": {{
+                        "type": "code",
+                        "properties": {{ "title": [["int a;\n    std::cin>>a;"]] }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+        );
+        let segments = super::extract_segments(&serde_json::from_str(&json).unwrap(), PAGE_ID);
+        assert_eq!(
+            segments,
+            [super::PostSegment::Code("int a;\n    std::cin>>a;".into())]
+        );
     }
 }

@@ -1,4 +1,4 @@
-use crate::mouse::{HitMap, MouseState};
+use crate::mouse::{HitAction, HitMap, MouseState};
 use crate::router::Router;
 use crate::ui::{self, FrameCtx};
 use ratatui::Frame;
@@ -47,13 +47,15 @@ impl App {
     pub fn handle_mouse(&self, mouse_event: MouseEvent) {
         self.mouse.borrow_mut().update(&mouse_event);
         if mouse_event.event == MouseEventKind::Pressed {
-            if let Some(href) = self
+            let action = self
                 .hits
                 .borrow()
-                .href_at((mouse_event.x, mouse_event.y))
-                .map(str::to_owned)
-            {
-                self.navigate(&href);
+                .action_at((mouse_event.x, mouse_event.y))
+                .cloned();
+            match action {
+                Some(HitAction::Go(href)) => self.navigate(&href),
+                Some(HitAction::Copy(text)) => copy_to_clipboard(&text),
+                None => {}
             }
         }
     }
@@ -73,4 +75,19 @@ impl App {
         }
         self.set_path(href);
     }
+}
+
+fn copy_to_clipboard(text: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let clipboard = window.navigator().clipboard();
+    let promise = clipboard.write_text(text);
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(err) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            log::error!("clipboard write failed: {err:?}");
+        } else {
+            log::info!("copied code block to clipboard");
+        }
+    });
 }

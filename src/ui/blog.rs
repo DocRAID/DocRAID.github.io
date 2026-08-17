@@ -1,11 +1,12 @@
 use super::FrameCtx;
 use crate::content;
-use crate::module::scraper::{same_page_id, tag_slug};
+use crate::module::scraper::{same_page_id, tag_slug, PostSegment};
 use crate::mouse::{list_row_y, CellSpan};
 use crate::router::Router;
 use crate::theme;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, HighlightSpacing, List, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
@@ -144,6 +145,8 @@ fn render_category_posts(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Re
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+const COPY_LABEL: &str = " Copy ";
+
 fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     let post_id = ctx.router.post().unwrap_or("");
     let title = content::posts(ctx.router.slug())
@@ -151,19 +154,129 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         .find(|post| same_page_id(&post.id, post_id))
         .map(|post| post.title)
         .unwrap_or_else(|| "post".to_string());
-    let body = content::post_text(post_id).unwrap_or_else(|| "(loading…)".to_string());
-    let paragraph = Paragraph::new(body)
-        .block(
-            Block::bordered()
-                .title(format!("{{ {title} }}"))
-                .title_alignment(Alignment::Center)
-                .border_type(BorderType::Plain),
-        )
-        .wrap(Wrap { trim: false })
+
+    let outer = Block::bordered()
+        .title(format!("{{ {title} }}"))
+        .title_alignment(Alignment::Center)
+        .border_type(BorderType::Plain)
         .fg(theme::FG)
         .bg(theme::BG);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
 
-    frame.render_widget(paragraph, area);
+    let Some(segments) = content::post_segments(post_id) else {
+        frame.render_widget(
+            Paragraph::new("(loading…)").fg(theme::FG).bg(theme::BG),
+            inner,
+        );
+        return;
+    };
+    if segments.is_empty() {
+        frame.render_widget(
+            Paragraph::new("(no content)").fg(theme::FG).bg(theme::BG),
+            inner,
+        );
+        return;
+    }
+
+    let mut constraints = Vec::new();
+    let mut remaining = inner.height;
+    for (index, segment) in segments.iter().enumerate() {
+        if remaining == 0 {
+            break;
+        }
+        if index > 0 {
+            let gap = 1.min(remaining);
+            constraints.push(Constraint::Length(gap));
+            remaining = remaining.saturating_sub(gap);
+        }
+        if remaining == 0 {
+            break;
+        }
+        let height = segment_height(segment).min(remaining);
+        constraints.push(Constraint::Length(height));
+        remaining = remaining.saturating_sub(height);
+    }
+
+    let slots = Layout::vertical(constraints).split(inner);
+    let mut slot = 0;
+    for (index, segment) in segments.iter().enumerate() {
+        if slot >= slots.len() {
+            break;
+        }
+        if index > 0 {
+            slot += 1;
+            if slot >= slots.len() {
+                break;
+            }
+        }
+        match segment {
+            PostSegment::Text(text) => {
+                frame.render_widget(
+                    Paragraph::new(text.as_str())
+                        .wrap(Wrap { trim: false })
+                        .fg(theme::FG)
+                        .bg(theme::BG),
+                    slots[slot],
+                );
+            }
+            PostSegment::Code(code) => {
+                render_code_block(ctx, frame, slots[slot], code);
+            }
+        }
+        slot += 1;
+    }
+}
+
+fn segment_height(segment: &PostSegment) -> u16 {
+    match segment {
+        PostSegment::Text(text) => text.split('\n').count().max(1) as u16,
+        PostSegment::Code(code) => (code.split('\n').count().max(1) as u16).saturating_add(2),
+    }
+}
+
+fn render_code_block(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect, code: &str) {
+    let sample = theme::CODE_STYLE_SAMPLE.unwrap_or(1);
+    let style = theme::code_block_style(sample);
+    let copy_hovered = copy_hit_span(area)
+        .map(|span| ctx.mouse.hits(span))
+        .unwrap_or(false);
+    let copy_style = if copy_hovered {
+        Style::new().fg(theme::BG).bg(theme::HOVER)
+    } else {
+        Style::new()
+            .fg(theme::DIM)
+            .bg(style.bg.unwrap_or(theme::BG))
+    };
+
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(style)
+        .title("code")
+        .title(Line::from(Span::styled(COPY_LABEL, copy_style)).right_aligned())
+        .style(style);
+
+    if let Some(span) = copy_hit_span(area) {
+        ctx.hits.add_copy(span, code.to_string());
+    }
+
+    frame.render_widget(
+        Paragraph::new(code)
+            .wrap(Wrap { trim: false })
+            .style(style)
+            .block(block),
+        area,
+    );
+}
+
+fn copy_hit_span(area: Rect) -> Option<CellSpan> {
+    if area.width < 8 || area.height == 0 {
+        return None;
+    }
+    let width = COPY_LABEL.len() as u16;
+    let x1 = area.x.saturating_add(area.width).saturating_sub(1);
+    let x0 = x1.saturating_sub(width);
+    Some(CellSpan::new(x0, x1, area.y, area.y.saturating_add(1)))
 }
 
 /// Split `Title - date` so the date is shown as `(date)` on the right.
