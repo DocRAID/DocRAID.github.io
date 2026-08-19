@@ -90,6 +90,23 @@ pub fn current_posts(slug: Option<&str>) -> Vec<ContentPage> {
     })
 }
 
+/// Every content page with its parent tag, titles left as scraped.
+pub fn current_tagged_posts() -> Vec<(String, ContentPage)> {
+    CATALOG.with(|catalog| {
+        catalog
+            .borrow()
+            .iter()
+            .flat_map(|section| {
+                section
+                    .pages
+                    .iter()
+                    .cloned()
+                    .map(|page| (section.tag.clone(), page))
+            })
+            .collect()
+    })
+}
+
 pub fn tag_slug(tag: &str) -> String {
     tag.replace('/', "-")
 }
@@ -155,6 +172,11 @@ fn catalog_is_empty() -> bool {
 
 fn apply_catalog(catalog: Vec<TagSection>) {
     CATALOG.with(|slot| *slot.borrow_mut() = catalog);
+}
+
+#[cfg(test)]
+pub fn set_catalog_for_tests(catalog: Vec<TagSection>) {
+    apply_catalog(catalog);
 }
 
 fn spawn_revalidate() {

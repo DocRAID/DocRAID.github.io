@@ -123,6 +123,17 @@ impl HitMap {
             _ => None,
         }
     }
+
+    #[cfg(test)]
+    pub fn hrefs(&self) -> Vec<&str> {
+        self.regions
+            .iter()
+            .filter_map(|region| match &region.action {
+                HitAction::Go(href) => Some(href.as_str()),
+                HitAction::Copy(_) => None,
+            })
+            .collect()
+    }
 }
 
 /// Inclusive cell-x ranges for a centered row of labeled buttons.

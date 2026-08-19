@@ -1,5 +1,5 @@
 use crate::mouse::{HitAction, HitMap, MouseState};
-use crate::router::Router;
+use crate::router::{Route, Router};
 use crate::ui::{self, FrameCtx};
 use ratatui::Frame;
 use ratzilla::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
@@ -36,16 +36,16 @@ impl App {
 
     pub fn set_path(&self, path: impl Into<String>) {
         let router = Router::parse(path.into());
-        let post = router.post().map(str::to_string);
-        if self.scroll_post.borrow().as_deref() != post.as_deref() {
+        let context = scroll_context(&router);
+        if self.scroll_post.borrow().as_deref() != context.as_deref() {
             *self.scroll.borrow_mut() = 0;
-            *self.scroll_post.borrow_mut() = post;
+            *self.scroll_post.borrow_mut() = context;
         }
         *self.router.borrow_mut() = router;
     }
 
     pub fn scroll_by(&self, delta: i32) {
-        if self.router.borrow().post().is_none() {
+        if !is_scrollable(&self.router.borrow()) {
             return;
         }
         let next = i32::from(*self.scroll.borrow()) + delta;
@@ -125,6 +125,18 @@ impl App {
             }
         }
         self.set_path(href);
+    }
+}
+
+fn is_scrollable(router: &Router) -> bool {
+    matches!(router.route(), Route::Intro) || router.post().is_some()
+}
+
+fn scroll_context(router: &Router) -> Option<String> {
+    if matches!(router.route(), Route::Intro) {
+        Some("intro".to_string())
+    } else {
+        router.post().map(str::to_string)
     }
 }
 

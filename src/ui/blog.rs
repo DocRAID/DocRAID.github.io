@@ -185,7 +185,7 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(outer, area);
 
     let Some(segments) = content::post_segments(post_id) else {
-        report_scroll(ctx, 0, inner.height);
+        ctx.report_scroll(0, inner.height);
         frame.render_widget(
             Paragraph::new("(loading…)").fg(theme::FG).bg(theme::BG),
             inner,
@@ -193,7 +193,7 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         return;
     };
     if segments.is_empty() {
-        report_scroll(ctx, 0, inner.height);
+        ctx.report_scroll(0, inner.height);
         frame.render_widget(
             Paragraph::new("(no content)").fg(theme::FG).bg(theme::BG),
             inner,
@@ -203,7 +203,7 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
 
     let content_height = content_height(&segments);
     let viewport = inner.height;
-    report_scroll(ctx, content_height, viewport);
+    ctx.report_scroll(content_height, viewport);
     let offset = ctx.scroll.min(content_height.saturating_sub(viewport));
     let body_area = Rect {
         width: inner.width.saturating_sub(1),
@@ -246,12 +246,6 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
             inner,
             &mut state,
         );
-    }
-}
-
-fn report_scroll(ctx: &mut FrameCtx<'_>, content_height: u16, viewport: u16) {
-    if let Some(metrics) = ctx.scroll_metrics.as_mut() {
-        **metrics = (content_height, viewport);
     }
 }
 
@@ -341,7 +335,7 @@ fn copy_hit_span(area: Rect) -> Option<CellSpan> {
 
 /// Split `Title - date` so the date is shown as `(date)` on the right.
 fn format_post_label(title: &str, width: u16) -> String {
-    let Some((name, date)) = split_trailing_date(title) else {
+    let Some((name, date)) = content::split_trailing_date(title) else {
         return title.to_string();
     };
     let right = format!("({date})");
@@ -356,27 +350,6 @@ fn format_post_label(title: &str, width: u16) -> String {
     }
 }
 
-fn split_trailing_date(title: &str) -> Option<(&str, &str)> {
-    let (name, date) = title
-        .rsplit_once(" - ")
-        .or_else(|| title.rsplit_once('-'))?;
-    let name = name.trim_end();
-    let date = date.trim();
-    if name.is_empty() || !looks_like_date(date) {
-        None
-    } else {
-        Some((name, date))
-    }
-}
-
-fn looks_like_date(text: &str) -> bool {
-    let digits = text.chars().filter(|ch| ch.is_ascii_digit()).count();
-    digits >= 4
-        && text
-            .chars()
-            .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '-' | '/' | ' '))
-}
-
 fn display_width(text: &str) -> usize {
     text.chars()
         .map(|ch| if ch.is_ascii() { 1 } else { 2 })
@@ -385,7 +358,9 @@ fn display_width(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_post_label, split_trailing_date};
+    use super::format_post_label;
+    use crate::content::split_trailing_date;
+    use ratatui::layout::Rect;
 
     #[test]
     fn splits_date_after_dash() {
