@@ -49,6 +49,29 @@ fn main() -> io::Result<()> {
         mouse_state.handle_mouse(event);
     });
 
+    let key_state = Rc::clone(&state);
+    terminal.on_key_event(move |event| {
+        key_state.handle_key(event);
+    });
+
+    let wheel_state = Rc::clone(&state);
+    let on_wheel =
+        Closure::<dyn FnMut(web_sys::WheelEvent)>::new(move |event: web_sys::WheelEvent| {
+            event.prevent_default();
+            let delta = event.delta_y();
+            let mut lines = (delta / 40.0).round() as i32;
+            if lines == 0 {
+                lines = if delta > 0.0 { 1 } else { -1 };
+            }
+            wheel_state.scroll_by(lines);
+        });
+    if let Err(err) =
+        window.add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref())
+    {
+        log::error!("failed to listen for wheel: {err:?}");
+    }
+    on_wheel.forget();
+
     let render_state = Rc::clone(&state);
     terminal.draw_web(move |frame| {
         render_state.render(frame);

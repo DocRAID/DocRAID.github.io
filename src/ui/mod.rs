@@ -18,11 +18,21 @@ pub struct FrameCtx<'a> {
     pub router: &'a Router,
     pub mouse: &'a MouseState,
     pub hits: &'a mut HitMap,
+    pub scroll: u16,
+    pub scroll_metrics: Option<&'a mut (u16, u16)>,
+}
+
+impl FrameCtx<'_> {
+    pub fn report_scroll(&mut self, content_height: u16, viewport: u16) {
+        if let Some(metrics) = self.scroll_metrics.as_mut() {
+            **metrics = (content_height, viewport);
+        }
+    }
 }
 
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>) {
     let [header, body] =
-        Layout::vertical([Constraint::Length(3), Constraint::Max(60)]).areas(frame.area());
+        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(frame.area());
 
     header::render(ctx, frame, header);
     match ctx.router.route() {

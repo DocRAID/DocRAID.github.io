@@ -27,4 +27,7 @@ web-sys = { version = "0.3", features = [
     "Storage",
     "Event",
     "Document",
+    "Navigator",
+    "Clipboard",
+    "WheelEvent",
 ] }

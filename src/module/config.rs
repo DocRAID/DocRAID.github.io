@@ -68,6 +68,20 @@ fn is_dashed_uuid(value: &str) -> bool {
         })
 }
 
+/// `158ec5eb3d2280218426f12e40729e48` → dashed UUID used in Notion maps.
+pub fn dashed_id(id: &str) -> String {
+    let hex: String = id
+        .chars()
+        .filter(|ch| ch.is_ascii_hexdigit())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    if hex.len() == 32 {
+        format_page_id(&hex)
+    } else {
+        id.to_string()
+    }
+}
+
 fn format_page_id(id: &str) -> String {
     format!(
         "{}-{}-{}-{}-{}",
@@ -101,6 +115,14 @@ mod tests {
         assert_eq!(
             page_id_from_url(url).as_deref(),
             Some("158ec5eb-3d22-8021-8426-f12e40729e48")
+        );
+    }
+
+    #[test]
+    fn dashed_id_accepts_compact_form() {
+        assert_eq!(
+            super::dashed_id("3beec5eb3d2280229297fdd6963aba1d"),
+            "3beec5eb-3d22-8022-9297-fdd6963aba1d"
         );
     }
 

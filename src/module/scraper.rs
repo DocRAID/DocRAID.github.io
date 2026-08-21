@@ -3,12 +3,12 @@
 //! H2 headings are tags. Pages nested under those headings (including
 //! inside toggle / collapsible blocks) are the blog content pages.
 
-use crate::module::config::{page_id_from_url, NotionConfig, EMBEDDED_CONFIG};
+use crate::module::config::{dashed_id, page_id_from_url, NotionConfig, EMBEDDED_CONFIG};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestCache, RequestInit, RequestMode, Response};
@@ -29,6 +29,7 @@ const MAX_CHILD_FETCHES: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentPage {
     pub title: String,
+    pub id: String,
     pub href: String,
 }
 
@@ -38,13 +39,22 @@ pub struct TagSection {
     pub pages: Vec<ContentPage>,
 }
 
-const CACHE_KEY: &str = "tui_blog.catalog.v2";
+/// A run of post body content. Whitespace inside each string is kept as-is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PostSegment {
+    Text(String),
+    Code(String),
+}
+
+const CACHE_KEY: &str = "tui_blog.catalog.v3";
 const REVALIDATE_MS: i32 = 45_000;
 
 thread_local! {
     static CATALOG: RefCell<Vec<TagSection>> = const { RefCell::new(Vec::new()) };
     static REVALIDATE_BUSY: RefCell<bool> = const { RefCell::new(false) };
     static POLL_STARTED: RefCell<bool> = const { RefCell::new(false) };
+    static POST_BODIES: RefCell<HashMap<String, Vec<PostSegment>>> = RefCell::new(HashMap::new());
+    static POST_FETCHING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 pub fn current_tags() -> Vec<String> {
@@ -66,6 +76,7 @@ pub fn current_posts(slug: Option<&str>) -> Vec<ContentPage> {
                 .flat_map(|section| {
                     section.pages.iter().map(|page| ContentPage {
                         title: format!("{} — {}", section.tag, page.title),
+                        id: page.id.clone(),
                         href: page.href.clone(),
                     })
                 })
@@ -79,8 +90,69 @@ pub fn current_posts(slug: Option<&str>) -> Vec<ContentPage> {
     })
 }
 
+/// Every content page with its parent tag, titles left as scraped.
+pub fn current_tagged_posts() -> Vec<(String, ContentPage)> {
+    CATALOG.with(|catalog| {
+        catalog
+            .borrow()
+            .iter()
+            .flat_map(|section| {
+                section
+                    .pages
+                    .iter()
+                    .cloned()
+                    .map(|page| (section.tag.clone(), page))
+            })
+            .collect()
+    })
+}
+
 pub fn tag_slug(tag: &str) -> String {
     tag.replace('/', "-")
+}
+
+pub fn same_page_id(left: &str, right: &str) -> bool {
+    left.replace('-', "") == right.replace('-', "")
+}
+
+/// Kick off a scrape of one Notion post. Safe to call every frame.
+pub fn request_post(page_id: &str) {
+    let id = page_id.replace('-', "");
+    if id.is_empty() {
+        return;
+    }
+    let already = POST_BODIES.with(|bodies| bodies.borrow().contains_key(&id))
+        || POST_FETCHING.with(|busy| !busy.borrow_mut().insert(id.clone()));
+    if already {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = fetch_post_plain(&id).await;
+        POST_FETCHING.with(|busy| {
+            busy.borrow_mut().remove(&id);
+        });
+        match result {
+            Ok(segments) => {
+                POST_BODIES.with(|bodies| {
+                    bodies.borrow_mut().insert(id, segments);
+                });
+            }
+            Err(err) => {
+                log::error!("post scrape failed: {err}");
+                POST_BODIES.with(|bodies| {
+                    bodies.borrow_mut().insert(
+                        id,
+                        vec![PostSegment::Text(format!("(failed to load)\n{err}"))],
+                    );
+                });
+            }
+        }
+    });
+}
+
+pub fn current_post_segments(page_id: &str) -> Option<Vec<PostSegment>> {
+    let id = page_id.replace('-', "");
+    POST_BODIES.with(|bodies| bodies.borrow().get(&id).cloned())
 }
 
 pub fn start_fetch() {
@@ -100,6 +172,11 @@ fn catalog_is_empty() -> bool {
 
 fn apply_catalog(catalog: Vec<TagSection>) {
     CATALOG.with(|slot| *slot.borrow_mut() = catalog);
+}
+
+#[cfg(test)]
+pub fn set_catalog_for_tests(catalog: Vec<TagSection>) {
+    apply_catalog(catalog);
 }
 
 fn spawn_revalidate() {
@@ -206,7 +283,6 @@ async fn fetch_catalog() -> Result<Vec<TagSection>, String> {
         Ok::<_, String>(extract_catalog_from_blocks(
             &Value::Object(blocks),
             &page_id,
-            &site_origin(&page.url),
         ))
     });
 
@@ -250,6 +326,19 @@ async fn resolve_missing(blocks: &mut Map<String, Value>, root_id: &str) {
                 }
             }
         }
+    }
+}
+
+async fn fetch_post_plain(page_id: &str) -> Result<Vec<PostSegment>, String> {
+    let root_id = dashed_id(page_id);
+    log::info!("fetching post body {root_id}");
+    let mut blocks = fetch_blocks(&root_id).await?;
+    resolve_missing(&mut blocks, &root_id).await;
+    let segments = extract_segments(&Value::Object(blocks), &root_id);
+    if segments.is_empty() {
+        Ok(vec![PostSegment::Text("(no content)".to_string())])
+    } else {
+        Ok(segments)
     }
 }
 
@@ -337,10 +426,10 @@ pub fn extract_catalog(json: &str, page_id: &str) -> Vec<TagSection> {
         log::error!("notion response is not valid JSON");
         return Vec::new();
     };
-    extract_catalog_from_blocks(&root, page_id, "https://limdongju.notion.site")
+    extract_catalog_from_blocks(&root, page_id)
 }
 
-fn extract_catalog_from_blocks(root: &Value, page_id: &str, origin: &str) -> Vec<TagSection> {
+fn extract_catalog_from_blocks(root: &Value, page_id: &str) -> Vec<TagSection> {
     let blocks = block_map(root);
     if !blocks.is_object() {
         log::error!("notion response is missing a block map");
@@ -361,13 +450,7 @@ fn extract_catalog_from_blocks(root: &Value, page_id: &str, origin: &str) -> Vec
             continue;
         }
         let mut pages = Vec::new();
-        collect_pages(
-            blocks,
-            &child_content_ids(value),
-            page_id,
-            origin,
-            &mut pages,
-        );
+        collect_pages(blocks, &child_content_ids(value), page_id, &tag, &mut pages);
         sections.push(TagSection { tag, pages });
     }
     sections
@@ -377,7 +460,7 @@ fn collect_pages(
     blocks: &Value,
     ids: &[String],
     root_id: &str,
-    origin: &str,
+    tag: &str,
     out: &mut Vec<ContentPage>,
 ) {
     for id in ids {
@@ -391,17 +474,81 @@ fn collect_pages(
         if kind == "page" {
             let title = rich_text(&value["properties"]["title"]);
             if !title.is_empty() {
+                let compact = id.replace('-', "");
                 out.push(ContentPage {
                     title,
-                    href: format!("{origin}/{}", id.replace('-', "")),
+                    id: compact.clone(),
+                    href: format!("/blog/{}/{}", tag_slug(tag), compact),
                 });
             }
             continue;
         }
         if kind == "toggle" || CONTAINER_TYPES.contains(&kind) || H2_TYPES.contains(&kind) {
-            collect_pages(blocks, &child_content_ids(value), root_id, origin, out);
+            collect_pages(blocks, &child_content_ids(value), root_id, tag, out);
         }
     }
+}
+
+fn extract_segments(root: &Value, page_id: &str) -> Vec<PostSegment> {
+    let blocks = block_map(root);
+    if !blocks.is_object() {
+        return Vec::new();
+    }
+    let mut segments = Vec::new();
+    collect_segments(
+        blocks,
+        &page_child_ids(blocks, page_id),
+        page_id,
+        &mut segments,
+    );
+    merge_text_segments(segments)
+}
+
+fn collect_segments(blocks: &Value, ids: &[String], root_id: &str, out: &mut Vec<PostSegment>) {
+    for id in ids {
+        let value = block_value(&blocks[id]);
+        let Some(kind) = value["type"].as_str() else {
+            continue;
+        };
+        if kind == "page" && !same_page_id(id, root_id) {
+            continue;
+        }
+        if kind == "code" {
+            out.push(PostSegment::Code(block_source_text(value)));
+        } else if let Some(text) = block_display_text(kind, value) {
+            out.push(PostSegment::Text(text));
+        }
+        if kind == "toggle" || CONTAINER_TYPES.contains(&kind) || H2_TYPES.contains(&kind) {
+            collect_segments(blocks, &child_content_ids(value), root_id, out);
+        }
+    }
+}
+
+fn block_source_text(value: &Value) -> String {
+    block_raw_text(&value["properties"]["title"])
+}
+
+fn block_display_text(kind: &str, value: &Value) -> Option<String> {
+    let text = block_raw_text(&value["properties"]["title"]);
+    match kind {
+        "text" | "quote" | "callout" | "header" | "sub_header" | "sub_sub_header"
+        | "bulleted_list" | "numbered_list" | "to_do" | "toggle" => Some(text),
+        _ => None,
+    }
+}
+
+fn merge_text_segments(segments: Vec<PostSegment>) -> Vec<PostSegment> {
+    let mut out = Vec::new();
+    for segment in segments {
+        match (out.last_mut(), segment) {
+            (Some(PostSegment::Text(existing)), PostSegment::Text(next)) => {
+                existing.push('\n');
+                existing.push_str(&next);
+            }
+            (_, other) => out.push(other),
+        }
+    }
+    out
 }
 
 fn missing_content_ids(blocks: &Map<String, Value>, root_id: &str) -> Vec<String> {
@@ -419,7 +566,7 @@ fn missing_content_ids(blocks: &Map<String, Value>, root_id: &str) -> Vec<String
             Some(block) => {
                 let value = block_value(block);
                 let kind = value["type"].as_str().unwrap_or("");
-                if kind == "page" && id != root_id {
+                if kind == "page" && !same_page_id(&id, root_id) {
                     continue;
                 }
                 if H2_TYPES.contains(&kind) || kind == "toggle" || CONTAINER_TYPES.contains(&kind) {
@@ -463,13 +610,47 @@ fn block_map_owned(root: Value) -> Option<Map<String, Value>> {
     }
 }
 
+fn resolve_block_key(blocks: &Value, page_id: &str) -> String {
+    if blocks.get(page_id).is_some() {
+        return page_id.to_string();
+    }
+    let dashed = dashed_id(page_id);
+    if blocks.get(&dashed).is_some() {
+        return dashed;
+    }
+    let compact = page_id.replace('-', "");
+    if let Some(key) = blocks.as_object().and_then(|map| {
+        map.keys()
+            .find(|key| key.replace('-', "") == compact)
+            .cloned()
+    }) {
+        return key;
+    }
+    dashed
+}
+
 fn page_child_ids(blocks: &Value, page_id: &str) -> Vec<String> {
-    let page = block_value(&blocks[page_id]);
+    let key = resolve_block_key(blocks, page_id);
+    let page = block_value(&blocks[&key]);
     if let Some(ids) = page["content"].as_array() {
         return ids
             .iter()
             .filter_map(|id| id.as_str().map(str::to_owned))
             .collect();
+    }
+
+    let owned: Vec<String> = blocks
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, block)| {
+            let value = block_value(block);
+            let parent = value["parent_id"].as_str()?;
+            same_page_id(parent, &key).then(|| id.clone())
+        })
+        .collect();
+    if !owned.is_empty() {
+        return owned;
     }
 
     blocks
@@ -479,7 +660,7 @@ fn page_child_ids(blocks: &Value, page_id: &str) -> Vec<String> {
         .filter_map(|(id, block)| {
             let value = block_value(block);
             let kind = value["type"].as_str()?;
-            (H2_TYPES.contains(&kind) && id != page_id).then(|| id.clone())
+            (H2_TYPES.contains(&kind) && !same_page_id(id, &key)).then(|| id.clone())
         })
         .collect()
 }
@@ -503,6 +684,10 @@ fn block_value(block: &Value) -> &Value {
 }
 
 fn rich_text(title: &Value) -> String {
+    block_raw_text(title)
+}
+
+fn block_raw_text(title: &Value) -> String {
     let Some(parts) = title.as_array() else {
         return String::new();
     };
@@ -510,14 +695,6 @@ fn rich_text(title: &Value) -> String {
         .iter()
         .filter_map(|part| part.get(0).and_then(Value::as_str))
         .collect()
-}
-
-fn site_origin(url: &str) -> String {
-    let rest = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-    let host = rest.split('/').next().unwrap_or("limdongju.notion.site");
-    format!("https://{host}")
 }
 
 fn dedupe_sections(sections: Vec<TagSection>) -> Vec<TagSection> {
@@ -612,9 +789,7 @@ mod tests {
         assert_eq!(catalog.len(), 2);
         assert_eq!(catalog[0].tag, "TEST1");
         assert_eq!(catalog[0].pages[0].title, "TEST-contents");
-        assert!(catalog[0].pages[0]
-            .href
-            .ends_with(&"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa5".replace('-', "")));
+        assert!(catalog[0].pages[0].href.starts_with("/blog/TEST1/"));
         assert_eq!(catalog[1].tag, "TEST2");
         assert_eq!(catalog[1].pages[0].title, "Direct page");
     }
@@ -630,5 +805,84 @@ mod tests {
     #[test]
     fn ignores_invalid_json() {
         assert!(extract_h2_titles("not-json", PAGE_ID).is_empty());
+    }
+
+    #[test]
+    fn extracts_plain_text_in_order() {
+        let json = format!(
+            r#"{{
+              "recordMap": {{
+                "block": {{
+                  "{PAGE_ID}": {{
+                    "value": {{
+                      "value": {{
+                        "type": "page",
+                        "content": [
+                          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+                          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"
+                        ]
+                      }}
+                    }}
+                  }},
+                  "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1": {{
+                    "value": {{
+                      "value": {{
+                        "type": "quote",
+                        "properties": {{ "title": [["created: 2025.12.12"]] }}
+                      }}
+                    }}
+                  }},
+                  "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2": {{
+                    "value": {{
+                      "value": {{
+                        "type": "text",
+                        "properties": {{ "title": [["hello"]] }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+        );
+        let segments = super::extract_segments(&serde_json::from_str(&json).unwrap(), PAGE_ID);
+        assert_eq!(
+            segments,
+            [super::PostSegment::Text(
+                "created: 2025.12.12\nhello".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn keeps_code_and_indentation() {
+        let json = format!(
+            r#"{{
+              "recordMap": {{
+                "block": {{
+                  "{PAGE_ID}": {{
+                    "value": {{
+                      "value": {{
+                        "type": "page",
+                        "content": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"]
+                      }}
+                    }}
+                  }},
+                  "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1": {{
+                    "value": {{
+                      "value": {{
+                        "type": "code",
+                        "properties": {{ "title": [["int a;\n    std::cin>>a;"]] }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+        );
+        let segments = super::extract_segments(&serde_json::from_str(&json).unwrap(), PAGE_ID);
+        assert_eq!(
+            segments,
+            [super::PostSegment::Code("int a;\n    std::cin>>a;".into())]
+        );
     }
 }
