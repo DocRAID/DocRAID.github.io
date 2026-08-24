@@ -37,7 +37,7 @@ jobs:
           wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
 
       - name: Build with Trunk
-        run: ./trunk build --release --public-url "/"
+        run: ./trunk build --release --public-url "/doc_raid_notui/"
 
         # 프로젝트 페이지인 경우 (username.github.io/repo-name)
         # run: ./trunk build --release --public-url "/${{ github.event.repository.name }}/"
