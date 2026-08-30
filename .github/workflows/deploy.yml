@@ -1,9 +1,10 @@
-name: Deploy to GitHub Pages
+name: CI and GitHub Pages
 
 on:
   push:
-    branches: [main]          # 기본 브랜치에 맞게 수정
-  workflow_dispatch:          # 수동 실행 가능
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,11 +12,41 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  TRUNK_VERSION: "0.21.14"
+  SITE_URL: "https://docraid.github.io"
+
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --features fetch-bin -- -D warnings
+
+      - name: Test
+        run: cargo test --features fetch-bin
+
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -32,17 +63,20 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
+      - name: Snapshot Notion catalog
+        run: cargo run --features fetch-bin --bin fetch_content
+
       - name: Install Trunk
         run: |
-          wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
+          wget -q "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf trunk-x86_64-unknown-linux-gnu.tar.gz
+          chmod +x trunk
 
       - name: Build with Trunk
         run: ./trunk build --release --public-url "/"
 
-        # 프로젝트 페이지인 경우 (username.github.io/repo-name)
-        # run: ./trunk build --release --public-url "/${{ github.event.repository.name }}/"
-        # 유저/조직 페이지인 경우 (username.github.io)
-        # run: ./trunk build --release --public-url "/"
+      - name: SPA fallback for GitHub Pages
+        run: cp dist/index.html dist/404.html
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -50,7 +84,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './dist'
+          path: "./dist"
 
       - name: Deploy to GitHub Pages
         id: deployment

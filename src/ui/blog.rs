@@ -1,11 +1,13 @@
 use super::FrameCtx;
-use crate::content;
-use crate::module::scraper::{same_page_id, tag_slug, PostSegment};
+use crate::content::{self, CatalogStatus};
+use crate::module::notion::PostSegment;
+use crate::module::scraper::{same_page_id, tag_slug};
 use crate::mouse::{list_row_y, CellSpan};
 use crate::router::Router;
 use crate::theme;
+use crate::width::{display_width, wrapped_rows};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, HighlightSpacing, List, ListState, Paragraph, Scrollbar,
@@ -15,12 +17,14 @@ use ratatui::Frame;
 
 /// Hide the tag/post sidebar below this many terminal columns.
 const COMPACT_WIDTH: u16 = 72;
+const COPY_LABEL: &str = " Copy ";
+const COPIED_LABEL: &str = " Copied ";
 
 pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     if is_compact(area) {
         if let Some(post_id) = ctx.router.post() {
             content::ensure_post(post_id);
-            render_post_body(ctx, frame, area);
+            render_post_body(ctx, frame, area, true);
         } else {
             render_post_list(ctx, frame, area);
         }
@@ -33,7 +37,7 @@ pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     if let Some(post_id) = ctx.router.post() {
         content::ensure_post(post_id);
         render_category_posts(ctx, frame, sidebar);
-        render_post_body(ctx, frame, body);
+        render_post_body(ctx, frame, body, false);
     } else {
         render_tag_list(ctx, frame, sidebar);
         render_post_list(ctx, frame, body);
@@ -44,6 +48,14 @@ fn is_compact(area: Rect) -> bool {
     area.width < COMPACT_WIDTH
 }
 
+fn status_placeholder() -> String {
+    match content::catalog_status() {
+        CatalogStatus::Loading => "(loading…)".to_string(),
+        CatalogStatus::Error(err) => format!("(failed to load)\n{err}"),
+        CatalogStatus::Ready => "(no posts)".to_string(),
+    }
+}
+
 fn render_tag_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     let tags_block = Block::bordered()
         .title("{{ tags }}")
@@ -51,21 +63,30 @@ fn render_tag_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         .border_type(BorderType::Plain);
 
     let tags = content::tags();
-    let tag_list = List::new(tags.iter().map(String::as_str))
+    let labels: Vec<String> = if tags.is_empty() {
+        vec![status_placeholder()]
+    } else {
+        tags.clone()
+    };
+    let tag_list = List::new(labels.iter().cloned())
         .block(tags_block)
         .bg(theme::BG)
         .highlight_style(Style::new().fg(theme::HOVER))
-        .highlight_spacing(HighlightSpacing::WhenSelected);
+        .highlight_spacing(HighlightSpacing::Never);
 
     let selected_slug = ctx.router.slug();
     let mut hovered = None;
     let mut selected = None;
+    ctx.nav_items.clear();
     for (index, tag) in tags.iter().enumerate() {
         let (y0, y1) = list_row_y(area, index, 1);
-        let x0 = area.x;
-        let x1 = area.x.saturating_add(area.width);
-        let span = CellSpan::new(x0, x1, y0, y1);
-        ctx.hits.add(span, Router::tag_href(tag));
+        if y0 >= area.y.saturating_add(area.height.saturating_sub(1)) {
+            break;
+        }
+        let span = CellSpan::new(area.x, area.x.saturating_add(area.width), y0, y1);
+        let href = Router::tag_href(tag);
+        ctx.hits.add(span, href.clone());
+        ctx.nav_items.push(href);
         if ctx.mouse.hits_rect(area) && ctx.mouse.hits(span) {
             hovered = Some(index);
         }
@@ -74,16 +95,29 @@ fn render_tag_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         }
     }
     let mut tags_state = ListState::default();
-    tags_state.select(hovered.or(selected));
+    tags_state.select(hovered.or(ctx.list_selected).or(selected));
 
     frame.render_stateful_widget(tag_list, area, &mut tags_state);
 }
 
+fn filtered_posts(ctx: &FrameCtx<'_>) -> Vec<crate::module::notion::ContentPage> {
+    let mut posts = content::posts(ctx.router.slug());
+    if !ctx.filter.is_empty() {
+        let needle = ctx.filter.to_lowercase();
+        posts.retain(|post| post.title.to_lowercase().contains(&needle));
+    }
+    posts
+}
+
 fn render_post_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
-    let posts = content::posts(ctx.router.slug());
+    let posts = filtered_posts(ctx);
     let inner_width = area.width.saturating_sub(2);
     let labels: Vec<String> = if posts.is_empty() {
-        vec!["(no posts)".to_string()]
+        vec![if ctx.filter.is_empty() {
+            status_placeholder()
+        } else {
+            "(no matches)".to_string()
+        }]
     } else {
         posts
             .iter()
@@ -91,32 +125,39 @@ fn render_post_list(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
             .collect()
     };
 
+    let title = if ctx.filter_open {
+        format!("{{ {} }}  /{}_", ctx.router.title(), ctx.filter)
+    } else if !ctx.filter.is_empty() {
+        format!("{{ {} }}  /{}", ctx.router.title(), ctx.filter)
+    } else {
+        format!("{{ {} }}", ctx.router.title())
+    };
+
     let body_block = Block::bordered()
-        .title(format!("{{ {} }}", ctx.router.title()))
+        .title(title)
         .title_alignment(Alignment::Center)
         .border_type(BorderType::Plain);
 
     let post_list = List::new(labels)
         .block(body_block)
         .bg(theme::BG)
-        .highlight_style(
-            Style::new()
-                .fg(theme::HOVER)
-                .add_modifier(Modifier::REVERSED),
-        )
-        .highlight_spacing(HighlightSpacing::WhenSelected);
+        .highlight_style(Style::new().fg(theme::HOVER))
+        .highlight_spacing(HighlightSpacing::Never);
 
     let mut posts_state = ListState::default();
+    ctx.nav_items.clear();
     if !posts.is_empty() {
         for (index, post) in posts.iter().enumerate() {
             let (y0, y1) = list_row_y(area, index, 1);
-            let x0 = area.x;
-            let x1 = area.x.saturating_add(area.width);
-            let span = CellSpan::new(x0, x1, y0, y1);
+            let span = CellSpan::new(area.x, area.x.saturating_add(area.width), y0, y1);
             ctx.hits.add(span, post.href.clone());
+            ctx.nav_items.push(post.href.clone());
             if ctx.mouse.hits_rect(area) && ctx.mouse.hits(span) {
                 posts_state.select(Some(index));
             }
+        }
+        if posts_state.selected().is_none() {
+            posts_state.select(ctx.list_selected);
         }
     }
 
@@ -127,7 +168,7 @@ fn render_category_posts(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Re
     let posts = content::posts(ctx.router.slug());
     let inner_width = area.width.saturating_sub(2);
     let labels: Vec<String> = if posts.is_empty() {
-        vec!["(no posts)".to_string()]
+        vec![status_placeholder()]
     } else {
         posts
             .iter()
@@ -144,15 +185,17 @@ fn render_category_posts(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Re
         )
         .bg(theme::BG)
         .highlight_style(Style::new().fg(theme::HOVER))
-        .highlight_spacing(HighlightSpacing::WhenSelected);
+        .highlight_spacing(HighlightSpacing::Never);
 
     let selected_post = ctx.router.post();
     let mut hovered = None;
     let mut selected = None;
+    ctx.nav_items.clear();
     for (index, post) in posts.iter().enumerate() {
         let (y0, y1) = list_row_y(area, index, 1);
         let span = CellSpan::new(area.x, area.x.saturating_add(area.width), y0, y1);
         ctx.hits.add(span, post.href.clone());
+        ctx.nav_items.push(post.href.clone());
         if ctx.mouse.hits_rect(area) && ctx.mouse.hits(span) {
             hovered = Some(index);
         }
@@ -161,13 +204,11 @@ fn render_category_posts(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Re
         }
     }
     let mut state = ListState::default();
-    state.select(hovered.or(selected));
+    state.select(hovered.or(ctx.list_selected).or(selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-const COPY_LABEL: &str = " Copy ";
-
-fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
+fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect, compact: bool) {
     let post_id = ctx.router.post().unwrap_or("");
     let title = content::posts(ctx.router.slug())
         .into_iter()
@@ -175,40 +216,78 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         .map(|post| post.title)
         .unwrap_or_else(|| "post".to_string());
 
-    let outer = Block::bordered()
+    let mut outer = Block::bordered()
         .title(format!("{{ {title} }}"))
         .title_alignment(Alignment::Center)
         .border_type(BorderType::Plain)
         .fg(theme::FG)
         .bg(theme::BG);
+    if compact {
+        if let Some(back) = ctx.router.parent_href() {
+            let back_label = " back ";
+            let span = CellSpan::new(
+                area.x.saturating_add(1),
+                area.x.saturating_add(1 + back_label.len() as u16),
+                area.y,
+                area.y.saturating_add(1),
+            );
+            ctx.hits.add(span, back);
+            outer = outer.title(Line::from(Span::styled(
+                back_label,
+                if ctx.mouse.hits(span) {
+                    Style::new().fg(theme::HOVER)
+                } else {
+                    Style::new().fg(theme::DIM)
+                },
+            )));
+        }
+    }
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    let Some(segments) = content::post_segments(post_id) else {
-        ctx.report_scroll(0, inner.height);
-        frame.render_widget(
-            Paragraph::new("(loading…)").fg(theme::FG).bg(theme::BG),
-            inner,
-        );
-        return;
-    };
-    if segments.is_empty() {
-        ctx.report_scroll(0, inner.height);
-        frame.render_widget(
-            Paragraph::new("(no content)").fg(theme::FG).bg(theme::BG),
-            inner,
-        );
-        return;
+    match content::post_state(post_id) {
+        None => {
+            ctx.report_scroll(0, inner.height);
+            frame.render_widget(
+                Paragraph::new("(loading…)").fg(theme::FG).bg(theme::BG),
+                inner,
+            );
+        }
+        Some(Err(err)) => {
+            ctx.report_scroll(0, inner.height);
+            frame.render_widget(
+                Paragraph::new(format!("(failed to load)\n{err}\nretrying…"))
+                    .fg(theme::FG)
+                    .bg(theme::BG),
+                inner,
+            );
+        }
+        Some(Ok(segments)) if segments.is_empty() => {
+            ctx.report_scroll(0, inner.height);
+            frame.render_widget(
+                Paragraph::new("(no content)").fg(theme::FG).bg(theme::BG),
+                inner,
+            );
+        }
+        Some(Ok(segments)) => render_segments(ctx, frame, inner, &segments),
     }
+}
 
-    let content_height = content_height(&segments);
-    let viewport = inner.height;
-    ctx.report_scroll(content_height, viewport);
-    let offset = ctx.scroll.min(content_height.saturating_sub(viewport));
+fn render_segments(
+    ctx: &mut FrameCtx<'_>,
+    frame: &mut Frame<'_>,
+    inner: Rect,
+    segments: &[PostSegment],
+) {
     let body_area = Rect {
         width: inner.width.saturating_sub(1),
         ..inner
     };
+    let text_width = body_area.width;
+    let content_height = content_height(segments, text_width);
+    let viewport = inner.height;
+    ctx.report_scroll(content_height, viewport);
+    let offset = ctx.scroll.min(content_height.saturating_sub(viewport));
 
     let mut cursor = 0_u16;
     for (index, segment) in segments.iter().enumerate() {
@@ -216,24 +295,25 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
             cursor = cursor.saturating_add(1);
         }
         let content_y = cursor;
-        let height = segment_height(segment);
+        let height = segment_height(segment, text_width);
         cursor = cursor.saturating_add(height);
         let Some(dest) = visible_rect(body_area, content_y, height, offset, viewport) else {
             continue;
         };
+        let skip = offset.saturating_sub(content_y);
         match segment {
             PostSegment::Text(text) => {
                 frame.render_widget(
                     Paragraph::new(text.as_str())
                         .wrap(Wrap { trim: false })
-                        .scroll((offset.saturating_sub(content_y), 0))
+                        .scroll((skip, 0))
                         .fg(theme::FG)
                         .bg(theme::BG),
                     dest,
                 );
             }
             PostSegment::Code(code) => {
-                render_code_block(ctx, frame, dest, code);
+                render_code_block(ctx, frame, dest, code, skip);
             }
         }
     }
@@ -249,13 +329,13 @@ fn render_post_body(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     }
 }
 
-fn content_height(segments: &[PostSegment]) -> u16 {
+fn content_height(segments: &[PostSegment], width: u16) -> u16 {
     let mut height = 0_u16;
     for (index, segment) in segments.iter().enumerate() {
         if index > 0 {
             height = height.saturating_add(1);
         }
-        height = height.saturating_add(segment_height(segment));
+        height = height.saturating_add(segment_height(segment, width));
     }
     height
 }
@@ -282,20 +362,28 @@ fn visible_rect(
     })
 }
 
-fn segment_height(segment: &PostSegment) -> u16 {
+fn segment_height(segment: &PostSegment, width: u16) -> u16 {
     match segment {
-        PostSegment::Text(text) => text.split('\n').count().max(1) as u16,
-        PostSegment::Code(code) => (code.split('\n').count().max(1) as u16).saturating_add(2),
+        PostSegment::Text(text) => wrapped_rows(text, width.max(1)),
+        PostSegment::Code(code) => {
+            wrapped_rows(code, width.saturating_sub(2).max(1)).saturating_add(2)
+        }
     }
 }
 
-fn render_code_block(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect, code: &str) {
-    let sample = theme::CODE_STYLE_SAMPLE.unwrap_or(1);
-    let style = theme::code_block_style(sample);
+fn render_code_block(
+    ctx: &mut FrameCtx<'_>,
+    frame: &mut Frame<'_>,
+    area: Rect,
+    code: &str,
+    skip: u16,
+) {
+    let style = theme::code_block_style();
+    let copy_label = if ctx.copied { COPIED_LABEL } else { COPY_LABEL };
     let copy_hovered = copy_hit_span(area)
         .map(|span| ctx.mouse.hits(span))
         .unwrap_or(false);
-    let copy_style = if copy_hovered {
+    let copy_style = if copy_hovered || ctx.copied {
         Style::new().fg(theme::BG).bg(theme::HOVER)
     } else {
         Style::new()
@@ -307,16 +395,20 @@ fn render_code_block(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect, 
         .border_type(BorderType::Plain)
         .border_style(style)
         .title("code")
-        .title(Line::from(Span::styled(COPY_LABEL, copy_style)).right_aligned())
+        .title(Line::from(Span::styled(copy_label, copy_style)).right_aligned())
         .style(style);
 
-    if let Some(span) = copy_hit_span(area) {
-        ctx.hits.add_copy(span, code.to_string());
+    if skip == 0 {
+        if let Some(span) = copy_hit_span(area) {
+            ctx.hits.add_copy(span, code.to_string());
+        }
     }
 
+    let inner_skip = skip.saturating_sub(1);
     frame.render_widget(
         Paragraph::new(code)
             .wrap(Wrap { trim: false })
+            .scroll((inner_skip, 0))
             .style(style)
             .block(block),
         area,
@@ -350,16 +442,11 @@ fn format_post_label(title: &str, width: u16) -> String {
     }
 }
 
-fn display_width(text: &str) -> usize {
-    text.chars()
-        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::format_post_label;
+    use super::{format_post_label, segment_height};
     use crate::content::split_trailing_date;
+    use crate::module::notion::PostSegment;
     use ratatui::layout::Rect;
 
     #[test]
@@ -387,5 +474,11 @@ mod tests {
         assert!(label.ends_with("(2025.12.12)"));
         assert_eq!(label.chars().count(), 40);
         assert!(!label.contains(" - "));
+    }
+
+    #[test]
+    fn text_height_includes_wrap() {
+        let segment = PostSegment::Text("abcdefghij".into());
+        assert_eq!(segment_height(&segment, 5), 2);
     }
 }

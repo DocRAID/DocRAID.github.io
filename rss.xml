@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>tui_blog</title>
+    <link>https://docraid.github.io/</link>
+    <description>Dongju Lim's personal technical blog</description>
+    <item>
+      <title>About this site - 2026.08.06</title>
+      <link>https://docraid.github.io/blog/Linux/3beec5eb3d2280d8a0afe17efb72c2b4</link>
+      <guid>https://docraid.github.io/blog/Linux/3beec5eb3d2280d8a0afe17efb72c2b4</guid>
+      <category>Linux</category>
+    </item>
+  </channel>
+</rss>

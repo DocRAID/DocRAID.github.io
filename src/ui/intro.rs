@@ -1,10 +1,10 @@
 use super::FrameCtx;
-use crate::content::{self, RecentPost};
+use crate::content::{self, CatalogStatus, RecentPost};
 use crate::mouse::CellSpan;
-use crate::router::Route;
 use crate::theme;
+use crate::width::{display_width, truncate_display};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -37,8 +37,10 @@ pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
+    let status = content::catalog_status();
     let posts = content::recent_posts(RECENT_LIMIT);
-    let content_h = content_height(posts.len());
+    let recent_count = if posts.is_empty() { 1 } else { posts.len() };
+    let content_h = content_height(recent_count);
     let viewport = inner.height;
     ctx.report_scroll(content_h, viewport);
 
@@ -62,12 +64,16 @@ pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
         return;
     }
 
+    let view = ViewPort {
+        inner,
+        offset,
+        pad_top,
+        viewport,
+    };
     let mut buf = Buffer::empty(Rect::new(0, 0, body_width, content_h.max(1)));
     Block::new().bg(theme::BG).render(*buf.area(), &mut buf);
-    paint_content(ctx, &mut buf, &posts, inner, offset, pad_top, viewport);
-    blit_visible(
-        &buf, frame, inner, offset, pad_top, body_width, content_h, viewport,
-    );
+    paint_content(ctx, &mut buf, &posts, status, view);
+    blit_visible(&buf, frame, view, body_width, content_h);
 
     if scrollable {
         let mut state = ScrollbarState::new(content_h.saturating_sub(viewport) as usize)
@@ -98,14 +104,20 @@ fn content_height(post_count: usize) -> u16 {
         .saturating_add(FOOTER_HEIGHT)
 }
 
-fn paint_content(
-    ctx: &mut FrameCtx<'_>,
-    buf: &mut Buffer,
-    posts: &[RecentPost],
+#[derive(Clone, Copy)]
+struct ViewPort {
     inner: Rect,
     offset: u16,
     pad_top: u16,
     viewport: u16,
+}
+
+fn paint_content(
+    ctx: &mut FrameCtx<'_>,
+    buf: &mut Buffer,
+    posts: &[RecentPost],
+    status: CatalogStatus,
+    view: ViewPort,
 ) {
     let width = buf.area().width;
     let mut y = 0_u16;
@@ -141,7 +153,6 @@ fn paint_content(
     .render(Rect::new(0, y, width, TAGLINE_HEIGHT), buf);
     y = y.saturating_add(TAGLINE_HEIGHT);
 
-
     y = y.saturating_add(NULL_HEIGHT);
 
     Paragraph::new("{ recent posts }")
@@ -152,14 +163,19 @@ fn paint_content(
     y = y.saturating_add(HEADING_HEIGHT);
 
     if posts.is_empty() {
-        Paragraph::new("no posts yet")
+        let empty = match status {
+            CatalogStatus::Loading => "loading posts…",
+            CatalogStatus::Error(_) => "failed to load posts",
+            CatalogStatus::Ready => "no posts yet",
+        };
+        Paragraph::new(empty)
             .alignment(Alignment::Center)
             .fg(theme::DIM)
             .bg(theme::BG)
             .render(Rect::new(0, y, width, 1), buf);
         y = y.saturating_add(1);
     } else {
-        y = paint_recent_posts(ctx, buf, posts, y, width, inner, offset, pad_top, viewport);
+        y = paint_recent_posts(ctx, buf, posts, y, width, view);
     }
 
     y = y.saturating_add(SECTION_GAP);
@@ -173,6 +189,22 @@ fn paint_content(
     .alignment(Alignment::Center)
     .bg(theme::BG)
     .render(Rect::new(0, y, width, FOOTER_HEIGHT), buf);
+    add_footer_hits(ctx, y, width, view);
+}
+
+const FOOTER_TEXT: &str = "hover [Blog] or [About]  ·  click to enter";
+
+fn add_footer_hits(ctx: &mut FrameCtx<'_>, y: u16, width: u16, view: ViewPort) {
+    let total = display_width(FOOTER_TEXT) as u16;
+    let start = width.saturating_sub(total) / 2;
+    let blog = Rect::new(start.saturating_add(6), y, 6, 1);
+    let about = Rect::new(start.saturating_add(16), y, 7, 1);
+    if let Some(span) = screen_span(blog, view) {
+        ctx.hits.add(span, "/blog");
+    }
+    if let Some(span) = screen_span(about, view) {
+        ctx.hits.add(span, "/about");
+    }
 }
 
 fn paint_recent_posts(
@@ -181,10 +213,7 @@ fn paint_recent_posts(
     posts: &[RecentPost],
     mut y: u16,
     width: u16,
-    inner: Rect,
-    offset: u16,
-    pad_top: u16,
-    viewport: u16,
+    view: ViewPort,
 ) -> u16 {
     let box_width = POST_BOX_MAX_WIDTH
         .min(width.saturating_sub(2))
@@ -204,10 +233,7 @@ fn paint_recent_posts(
             &post.href,
             &post.title,
             &post_subtitle(post, text_width),
-            inner,
-            offset,
-            pad_top,
-            viewport,
+            view,
         );
         y = y.saturating_add(POST_BOX_HEIGHT);
     }
@@ -221,12 +247,9 @@ fn paint_hit_card(
     href: &str,
     title: &str,
     subtitle: &str,
-    inner: Rect,
-    offset: u16,
-    pad_top: u16,
-    viewport: u16,
+    view: ViewPort,
 ) {
-    let hovered = if let Some(span) = screen_span(area, inner, offset, pad_top, viewport) {
+    let hovered = if let Some(span) = screen_span(area, view) {
         ctx.hits.add(span, href);
         ctx.mouse.hits(span)
     } else {
@@ -235,59 +258,48 @@ fn paint_hit_card(
     paint_card(buf, area, hovered, title, subtitle);
 }
 
-fn screen_span(
-    content: Rect,
-    inner: Rect,
-    offset: u16,
-    pad_top: u16,
-    viewport: u16,
-) -> Option<CellSpan> {
-    let start = content.y.max(offset);
+fn screen_span(content: Rect, view: ViewPort) -> Option<CellSpan> {
+    let start = content.y.max(view.offset);
     let end = content
         .y
         .saturating_add(content.height)
-        .min(offset.saturating_add(viewport));
+        .min(view.offset.saturating_add(view.viewport));
     if end <= start || content.width == 0 {
         return None;
     }
     Some(CellSpan::new(
-        inner.x.saturating_add(content.x),
-        inner
+        view.inner.x.saturating_add(content.x),
+        view.inner
             .x
             .saturating_add(content.x)
             .saturating_add(content.width),
-        inner
+        view.inner
             .y
-            .saturating_add(pad_top)
-            .saturating_add(start.saturating_sub(offset)),
-        inner
+            .saturating_add(view.pad_top)
+            .saturating_add(start.saturating_sub(view.offset)),
+        view.inner
             .y
-            .saturating_add(pad_top)
-            .saturating_add(end.saturating_sub(offset)),
+            .saturating_add(view.pad_top)
+            .saturating_add(end.saturating_sub(view.offset)),
     ))
 }
 
-fn blit_visible(
-    src: &Buffer,
-    frame: &mut Frame<'_>,
-    inner: Rect,
-    offset: u16,
-    pad_top: u16,
-    width: u16,
-    content_h: u16,
-    viewport: u16,
-) {
+fn blit_visible(src: &Buffer, frame: &mut Frame<'_>, view: ViewPort, width: u16, content_h: u16) {
     let dest = frame.buffer_mut();
-    let rows = content_h.saturating_sub(offset).min(viewport);
+    let rows = content_h.saturating_sub(view.offset).min(view.viewport);
     for row in 0..rows {
-        let dest_y = inner.y.saturating_add(pad_top).saturating_add(row);
-        if dest_y >= inner.y.saturating_add(inner.height) {
+        let dest_y = view
+            .inner
+            .y
+            .saturating_add(view.pad_top)
+            .saturating_add(row);
+        if dest_y >= view.inner.y.saturating_add(view.inner.height) {
             break;
         }
-        let src_y = offset.saturating_add(row);
+        let src_y = view.offset.saturating_add(row);
         for x in 0..width {
-            let dest_x = inner.x.saturating_add(x);
-            if dest_x >= inner.x.saturating_add(inner.width) {
+            let dest_x = view.inner.x.saturating_add(x);
+            if dest_x >= view.inner.x.saturating_add(view.inner.width) {
                 break;
             }
             dest[(dest_x, dest_y)] = src[(x, src_y)].clone();
@@ -316,7 +328,7 @@ fn paint_card(buf: &mut Buffer, area: Rect, hovered: bool, title: &str, subtitle
     }
     let accent = if hovered { theme::HOVER } else { theme::DIM };
     let title_style = if hovered {
-        Style::new().fg(theme::HOVER).add_modifier(Modifier::BOLD)
+        Style::new().fg(theme::HOVER)
     } else {
         Style::new().fg(theme::FG)
     };
@@ -346,50 +358,15 @@ fn paint_card(buf: &mut Buffer, area: Rect, hovered: bool, title: &str, subtitle
     .render(area, buf);
 }
 
-fn truncate_display(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if display_width(text) <= width {
-        return text.to_string();
-    }
-    if width == 1 {
-        return "…".to_string();
-    }
-    let budget = width.saturating_sub(1);
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let ch_width = char_width(ch);
-        if used + ch_width > budget {
-            break;
-        }
-        out.push(ch);
-        used += ch_width;
-    }
-    out.push('…');
-    out
-}
-
-fn display_width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
-}
-
-fn char_width(ch: char) -> usize {
-    if ch.is_ascii() || ch == '…' {
-        1
-    } else {
-        2
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{display_width, render, truncate_display};
-    use crate::module::scraper::{self, ContentPage, TagSection};
+    use super::render;
+    use crate::module::notion::{ContentPage, TagSection};
+    use crate::module::scraper;
     use crate::mouse::{HitMap, MouseState};
     use crate::router::Router;
     use crate::ui::FrameCtx;
+    use crate::width::{display_width, truncate_display};
     use ratatui::{backend::TestBackend, Terminal};
 
     fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
@@ -414,12 +391,18 @@ mod tests {
         let mut metrics = (0_u16, 0_u16);
         terminal
             .draw(|frame| {
+                let mut nav_items = Vec::new();
                 let mut ctx = FrameCtx {
                     router: &router,
                     mouse: &mouse,
                     hits: &mut hits,
                     scroll,
                     scroll_metrics: Some(&mut metrics),
+                    list_selected: None,
+                    nav_items: &mut nav_items,
+                    filter: "",
+                    filter_open: false,
+                    copied: false,
                 };
                 render(&mut ctx, frame, frame.area());
             })
@@ -498,9 +481,10 @@ mod tests {
         assert!(bottom.contains("click to enter"));
         assert!(bottom.contains("post2"));
         assert!(!bottom.contains("Dongju"));
-        assert!(top_hits.hrefs().contains(&"/blog"));
+        assert!(top_hits.hrefs().contains(&"/blog/linux/6"));
         assert!(bottom_hits.hrefs().contains(&"/blog/linux/2"));
-        assert!(!bottom_hits.hrefs().contains(&"/blog"));
+        assert!(bottom_hits.hrefs().contains(&"/blog"));
+        assert!(bottom_hits.hrefs().contains(&"/about"));
     }
 
     #[test]

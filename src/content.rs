@@ -1,5 +1,9 @@
-use crate::module::scraper::{self, ContentPage, PostSegment};
+use crate::module::catalog;
+use crate::module::notion::{ContentPage, PostSegment};
+use crate::module::scraper;
 use std::collections::HashSet;
+
+pub use crate::module::catalog::CatalogStatus;
 
 /// Sidebar tags as a string array.
 ///
@@ -104,12 +108,27 @@ pub fn ensure_post(page_id: &str) {
     scraper::request_post(page_id);
 }
 
-/// Scraped post body, if the fetch has finished.
+/// Scraped post body, if the fetch has finished successfully.
 pub fn post_segments(page_id: &str) -> Option<Vec<PostSegment>> {
     scraper::current_post_segments(page_id)
 }
 
-/// Start a browser fetch of the Notion catalog. Call once per site load.
+/// `None` = still loading, `Some(Ok)` = body, `Some(Err)` = last failure.
+pub fn post_state(page_id: &str) -> Option<Result<Vec<PostSegment>, String>> {
+    scraper::current_post_state(page_id)
+}
+
+pub fn catalog_status() -> CatalogStatus {
+    catalog::bootstrap();
+    catalog::status()
+}
+
+pub fn about_text() -> Option<String> {
+    catalog::bootstrap();
+    catalog::about()
+}
+
+/// Load the snapshot, then scrape Notion in the browser only if it is empty.
 pub fn refresh() {
     scraper::start_fetch();
 }
