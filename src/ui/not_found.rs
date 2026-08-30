@@ -2,7 +2,7 @@ use super::{render_page, FrameCtx};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-const BODY: &str = r#"
+const BODY_WIDE: &str = r#"
 
 
 
@@ -25,6 +25,18 @@ const BODY: &str = r#"
 +=======================================================================================+
 "#;
 
-pub fn render(ctx: &FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
-    render_page(frame, area, &ctx.router.title(), BODY);
+const BODY_NARROW: &str = r#"
+  404
+  not found
+
+  [Intro]  [Blog]  [About]
+"#;
+
+pub fn render(ctx: &mut FrameCtx<'_>, frame: &mut Frame<'_>, area: Rect) {
+    let body = if area.width < 90 {
+        BODY_NARROW
+    } else {
+        BODY_WIDE
+    };
+    render_page(frame, area, &ctx.router.title(), body);
 }

@@ -2,40 +2,61 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, user-scalable=no"
+      name="description"
+      content="Dongju Lim's personal technical blog. Study · Think · Logging."
     />
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/fira_code.min.css"
+    <meta property="og:title" content="tui_blog — Dongju Lim" />
+    <meta
+      property="og:description"
+      content="Dongju Lim's personal technical blog. Study · Think · Logging."
     />
-    <title>tui_blog</title>
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://docraid.github.io/" />
+    <meta name="theme-color" content="#121212" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="tui_blog" href="/rss.xml" />
+    <title>Dongju Lim — tui_blog</title>
     <base href="/" />
+    <link data-trunk rel="rust" href="Cargo.toml" data-bin="tui_blog" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="notion.json" />
+    <link data-trunk rel="copy-file" href="rss.xml" />
+    <link data-trunk rel="copy-file" href="favicon.svg" />
+    <link data-trunk rel="copy-dir" href="assets/fonts" data-target-path="fonts" />
     <style>
+      @font-face {
+        font-family: "Fira Code";
+        src: url("/fonts/FiraCode-Regular.woff2") format("woff2");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      html,
       body {
         margin: 0;
         width: 100%;
-        height: 100vh;
+        height: 100%;
+        overflow: hidden;
+        background-color: #121212;
+        cursor: default;
+      }
+      body {
         display: flex;
         flex-direction: column;
         justify-content: center;
         align-items: center;
         align-content: center;
-        background-color: #121212;
       }
-      pre {
-        font-family: "Fira Code", monospace;
-        font-size: 16px;
+      pre,
+      pre span {
+        font-family: "Fira Code", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+        font-size: 16px !important;
+        font-weight: 400 !important;
+        font-synthesis: none;
         margin: 0px;
       }
     </style>
   </head>
-  <body>
-    <script type="module">
-      import init from "./pkg/ratzilla.js";
-      init();
-    </script>
-  </body>
+  <body></body>
 </html>

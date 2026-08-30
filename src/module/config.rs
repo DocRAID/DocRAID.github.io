@@ -3,8 +3,7 @@ use serde::Deserialize;
 /// Embedded copy used when the same-origin `notion.json` cannot be fetched.
 pub const EMBEDDED_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/notion.json"));
 
-/// Root-absolute so `/blog/linux` does not resolve this to `/blog/notion.json`.
-#[allow(dead_code)]
+/// Root-absolute path of the compile-time Notion source list (copied into dist).
 pub const CONFIG_PATH: &str = "/notion.json";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -27,15 +26,20 @@ impl NotionConfig {
     pub fn tag_pages(&self) -> impl Iterator<Item = &NotionPage> {
         self.pages.iter().filter(|page| page.role == "tags")
     }
+
+    pub fn about_pages(&self) -> impl Iterator<Item = &NotionPage> {
+        self.pages.iter().filter(|page| page.role == "about")
+    }
 }
 
 /// Pull the Notion page id off the end of a public site URL.
 ///
 /// The last path segment is either a bare 32-digit id or `Slug-32hex`.
 /// Only that trailing id is used — hex letters in the slug (`Open`,
-/// `Study`, …) must not be mixed in.
+/// `Study`, …) must not be mixed in. Query strings and fragments are ignored.
 pub fn page_id_from_url(url: &str) -> Option<String> {
-    let last = url.split(['/', '?']).rfind(|segment| !segment.is_empty())?;
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    let last = url.split('/').rfind(|segment| !segment.is_empty())?;
 
     if last.len() >= 36 {
         let tail = &last[last.len() - 36..];
@@ -131,6 +135,13 @@ mod tests {
         let url = "https://limdongju.notion.site/Linux-158ec5eb3d22807ea341c9e5604113c3?pvs=25";
         assert_eq!(
             page_id_from_url(url).as_deref(),
+            Some("158ec5eb-3d22-807e-a341-c9e5604113c3")
+        );
+        assert_eq!(
+            page_id_from_url(
+                "https://limdongju.notion.site/Linux-158ec5eb3d22807ea341c9e5604113c3#hash"
+            )
+            .as_deref(),
             Some("158ec5eb-3d22-807e-a341-c9e5604113c3")
         );
     }

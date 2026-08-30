@@ -10,7 +10,7 @@ use crate::theme;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Stylize;
 use ratatui::text::Text;
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
 use ratatui::Frame;
 
 /// Per-frame view of app state that widgets may read or write.
@@ -20,6 +20,11 @@ pub struct FrameCtx<'a> {
     pub hits: &'a mut HitMap,
     pub scroll: u16,
     pub scroll_metrics: Option<&'a mut (u16, u16)>,
+    pub list_selected: Option<usize>,
+    pub nav_items: &'a mut Vec<String>,
+    pub filter: &'a str,
+    pub filter_open: bool,
+    pub copied: bool,
 }
 
 impl FrameCtx<'_> {
@@ -51,11 +56,31 @@ fn page_panel<'a>(title: &str, text: impl Into<Text<'a>>) -> Paragraph<'a> {
                 .title_alignment(Alignment::Center)
                 .border_type(BorderType::Plain),
         )
+        .wrap(Wrap { trim: false })
         .fg(theme::FG)
         .bg(theme::BG)
-        .centered()
 }
 
 fn render_page(frame: &mut Frame<'_>, area: Rect, title: &str, text: impl Into<Text<'static>>) {
-    frame.render_widget(page_panel(title, text), area);
+    frame.render_widget(page_panel(title, text).centered(), area);
+}
+
+fn render_scrolling_page(
+    ctx: &mut FrameCtx<'_>,
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    text: &str,
+    centered: bool,
+) {
+    let inner_h = area.height.saturating_sub(2);
+    let inner_w = area.width.saturating_sub(2);
+    let content_h = crate::width::wrapped_rows(text, inner_w.max(1));
+    ctx.report_scroll(content_h, inner_h);
+    let offset = ctx.scroll.min(content_h.saturating_sub(inner_h));
+    let mut paragraph = page_panel(title, text.to_string()).scroll((offset, 0));
+    if centered {
+        paragraph = paragraph.centered();
+    }
+    frame.render_widget(paragraph, area);
 }
