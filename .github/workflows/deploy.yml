@@ -17,7 +17,6 @@ concurrency:
 
 env:
   TRUNK_VERSION: "0.21.14"
-  SITE_URL: "https://docraid.github.io"
 
 jobs:
   test:
@@ -39,10 +38,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --features fetch-bin -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --features fetch-bin
+        run: cargo test
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -62,9 +61,6 @@ jobs:
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
-
-      - name: Snapshot Notion catalog
-        run: cargo run --features fetch-bin --bin fetch_content
 
       - name: Install Trunk
         run: |

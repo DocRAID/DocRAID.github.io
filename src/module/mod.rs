@@ -3,3 +3,4 @@ pub mod config;
 pub mod notion;
 pub mod scraper;
 pub mod snapshot;
+pub mod storage;

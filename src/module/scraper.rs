@@ -1,5 +1,5 @@
-//! Browser Notion fetch used when the compile-time snapshot is empty,
-//! and for post bodies that were not snapshotted.
+//! Browser Notion fetch. Hydrates from `localStorage` when possible, then
+//! recrawls on page load and once a minute to refresh the cache.
 
 use super::catalog::{self, CatalogStatus};
 use super::config::{dashed_id, page_id_from_url, NotionConfig, EMBEDDED_CONFIG};
@@ -7,20 +7,25 @@ use super::notion::{
     self, block_map_owned, extract_catalog_from_blocks, extract_segments, merge_block_maps,
     missing_content_ids, parse_block_map, MAX_CHILD_FETCHES,
 };
+use super::snapshot::Snapshot;
+use super::storage;
 use futures::future::join_all;
 use serde_json::{Map, Value};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestCache, RequestInit, RequestMode, Response};
 
 const NOTION_LIVE_API: &str = "https://notion-api.splitbee.io/v1/page/";
 const RETRY_AFTER_MS: u64 = 3_000;
+const REFRESH_INTERVAL_MS: i32 = 60_000;
 
 thread_local! {
     static LIVE_BUSY: RefCell<bool> = const { RefCell::new(false) };
     static POST_FETCHING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static INTERVAL_STARTED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 pub use notion::{same_page_id, tag_slug, ContentPage, PostSegment, TagSection};
@@ -72,7 +77,10 @@ pub fn request_post(page_id: &str) {
             busy.borrow_mut().remove(&id);
         });
         match result {
-            Ok(segments) => catalog::insert_post(&id, segments),
+            Ok(segments) => {
+                catalog::insert_post(&id, segments);
+                persist_catalog();
+            }
             Err(err) => {
                 log::error!("post scrape failed: {err}");
                 catalog::insert_post_failure(&id, err, now_ms());
@@ -81,12 +89,39 @@ pub fn request_post(page_id: &str) {
     });
 }
 
-/// Load the embedded snapshot, then live-fetch the catalog only if it is empty.
+/// Load cached catalog and post bodies immediately, then recrawl.
 pub fn start_fetch() {
     catalog::bootstrap();
-    if catalog::catalog_is_empty() {
-        spawn_live_catalog();
+    spawn_live_catalog();
+    start_refresh_interval();
+}
+
+fn start_refresh_interval() {
+    if INTERVAL_STARTED.with(|slot| {
+        if *slot.borrow() {
+            true
+        } else {
+            *slot.borrow_mut() = true;
+            false
+        }
+    }) {
+        return;
     }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let callback = Closure::<dyn FnMut()>::new(|| {
+        spawn_live_catalog();
+    });
+    if let Err(err) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        REFRESH_INTERVAL_MS,
+    ) {
+        log::error!("failed to start content refresh interval: {err:?}");
+        INTERVAL_STARTED.with(|slot| *slot.borrow_mut() = false);
+        return;
+    }
+    callback.forget();
 }
 
 fn spawn_live_catalog() {
@@ -101,27 +136,21 @@ fn spawn_live_catalog() {
         return;
     }
     wasm_bindgen_futures::spawn_local(async {
-        let result = fetch_catalog().await;
+        let result = fetch_full_snapshot().await;
         LIVE_BUSY.with(|busy| *busy.borrow_mut() = false);
         match result {
-            Ok((catalog, about)) => {
-                if catalog.is_empty() && about.is_none() {
-                    if catalog::catalog_is_empty() {
-                        catalog::set_status(CatalogStatus::Ready);
-                    }
-                    return;
-                }
+            Ok(snapshot) if snapshot.has_content() => {
                 log::info!(
                     "notion catalog updated ({} tags / {} posts)",
-                    catalog.len(),
-                    catalog
-                        .iter()
-                        .map(|section| section.pages.len())
-                        .sum::<usize>()
+                    snapshot.sections.len(),
+                    snapshot.posts.len()
                 );
-                catalog::apply_catalog(catalog);
-                if about.is_some() {
-                    catalog::set_about(about);
+                catalog::merge_live_snapshot(snapshot);
+                persist_catalog();
+            }
+            Ok(_) => {
+                if catalog::catalog_is_empty() {
+                    catalog::set_status(CatalogStatus::Ready);
                 }
             }
             Err(err) => {
@@ -132,6 +161,14 @@ fn spawn_live_catalog() {
             }
         }
     });
+}
+
+fn persist_catalog() {
+    if !storage::usable() {
+        return;
+    }
+    let snapshot = catalog::export_snapshot(now_ms());
+    let _ = storage::save(&snapshot);
 }
 
 async fn fetch_catalog() -> Result<(Vec<TagSection>, Option<String>), String> {
@@ -180,6 +217,36 @@ async fn fetch_catalog() -> Result<(Vec<TagSection>, Option<String>), String> {
         return Err(errors.remove(0));
     }
     Ok((catalog, about))
+}
+
+async fn fetch_full_snapshot() -> Result<Snapshot, String> {
+    let (sections, about) = fetch_catalog().await?;
+    let mut seen = HashSet::new();
+    let ids: Vec<String> = sections
+        .iter()
+        .flat_map(|section| section.pages.iter())
+        .filter(|page| seen.insert(page.id.replace('-', "")))
+        .map(|page| page.id.clone())
+        .collect();
+    let jobs = ids.into_iter().map(|id| async move {
+        let result = fetch_post_plain(&id).await;
+        (id, result)
+    });
+    let mut posts = HashMap::new();
+    for (id, result) in join_all(jobs).await {
+        match result {
+            Ok(segments) => {
+                posts.insert(id.replace('-', ""), segments);
+            }
+            Err(err) => log::error!("post {id}: {err}"),
+        }
+    }
+    Ok(Snapshot {
+        saved_at: now_ms(),
+        sections,
+        posts,
+        about,
+    })
 }
 
 async fn load_about_page(url: &str) -> Result<String, String> {
@@ -246,16 +313,22 @@ async fn fetch_blocks(page_id: &str) -> Result<Map<String, Value>, String> {
 }
 
 async fn fetch_page_json(page_id: &str) -> Result<String, String> {
+    fetch_text(&notion_page_url(page_id, now_ms())).await
+}
+
+/// Splitbee serves `Cache-Control: public, max-age=3600`. A unique query
+/// string forces a Vercel/browser cache miss so recrawls see Notion edits.
+/// Extra request headers cannot be used: OPTIONS with `Cache-Control` 404s.
+fn notion_page_url(page_id: &str, cache_bust: u64) -> String {
     let compact_id = page_id.replace('-', "");
-    let url = format!("{NOTION_LIVE_API}{compact_id}");
-    fetch_text(&url).await
+    format!("{NOTION_LIVE_API}{compact_id}?t={cache_bust}")
 }
 
 async fn fetch_text(url: &str) -> Result<String, String> {
     let opts = RequestInit::new();
     opts.set_method("GET");
     opts.set_mode(RequestMode::Cors);
-    opts.set_cache(RequestCache::Default);
+    opts.set_cache(RequestCache::Reload);
 
     let request = Request::new_with_str_and_init(url, &opts).map_err(js_err)?;
     let window = web_sys::window().ok_or_else(|| "missing window".to_string())?;
@@ -284,4 +357,18 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 pub fn set_catalog_for_tests(catalog: Vec<TagSection>) {
     catalog::set_catalog_for_tests(catalog);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notion_page_url;
+
+    #[test]
+    fn notion_page_url_busts_the_cdn_cache() {
+        let url = notion_page_url("3bee-c5eb", 1_700_000_000);
+        assert_eq!(
+            url,
+            "https://notion-api.splitbee.io/v1/page/3beec5eb?t=1700000000"
+        );
+    }
 }
