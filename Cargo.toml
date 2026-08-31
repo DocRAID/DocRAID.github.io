@@ -16,15 +16,6 @@ path = "src/lib.rs"
 name = "tui_blog"
 path = "src/main.rs"
 
-[[bin]]
-name = "fetch_content"
-path = "src/bin/fetch_content.rs"
-required-features = ["fetch-bin"]
-
-[features]
-default = []
-fetch-bin = ["dep:ureq"]
-
 [dependencies]
 ratatui = { version = "0.29.0", default-features = false }
 ratzilla = "0.2.0"
@@ -37,7 +28,6 @@ wasm-bindgen-futures = "0.4"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 js-sys = "0.3"
 unicode-width = "0.2"
-ureq = { version = "2", optional = true }
 web-sys = { version = "0.3", features = [
     "Request",
     "RequestInit",

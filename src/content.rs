@@ -7,8 +7,7 @@ pub use crate::module::catalog::CatalogStatus;
 
 /// Sidebar tags as a string array.
 ///
-/// Filled in the browser on each page load from every `notion.json`
-/// page whose `role` is `"tags"`.
+/// Filled from `localStorage` when present, otherwise by a Notion scrape.
 pub fn tags() -> Vec<String> {
     scraper::current_tags()
 }
@@ -128,7 +127,7 @@ pub fn about_text() -> Option<String> {
     catalog::about()
 }
 
-/// Load the snapshot, then scrape Notion in the browser only if it is empty.
+/// Hydrate from `localStorage` if possible, then scrape Notion to refresh it.
 pub fn refresh() {
     scraper::start_fetch();
 }

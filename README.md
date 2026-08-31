@@ -10,11 +10,10 @@ Needs a Rust toolchain with the `wasm32-unknown-unknown` target and [Trunk](http
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo run --features fetch-bin --bin fetch_content   # snapshot Notion → snapshot.json + rss.xml
 trunk serve
 ```
 
-`fetch_content` is optional for a first paint: if `snapshot.json` is empty the WASM app will scrape Notion in the browser once. Production builds always snapshot at deploy time so visitors do not depend on the unofficial Notion proxy.
+The WASM app loads the post list and bodies from `localStorage` when present, then recrawls Notion on each page load and once a minute to refresh the cache. If `localStorage` is empty it crawls immediately and saves the result. If the cache cannot be written (quota, private mode, …) it crawls on every load and skips saving.
 
 ```bash
 trunk build --release
@@ -30,8 +29,6 @@ trunk build --release
 | `about` | Optional page whose body is shown on `/about` |
 
 Post titles may end with ` - YYYY.MM.DD` (dots, dashes, or slashes). That date is used for “recent posts” sorting and the list label.
-
-Rebuild the snapshot after editing Notion or `notion.json`.
 
 ## Keyboard
 
@@ -50,7 +47,7 @@ On a phone, drag to scroll. Tapping still follows hover/click targets.
 
 ## Deploy
 
-Pushes to `main` run format, clippy, and tests, snapshot Notion, build with Trunk, copy `index.html` to `404.html` (so `/about` and `/blog/...` work on GitHub Pages), and publish.
+Pushes to `main` run format, clippy, and tests, build with Trunk, copy `index.html` to `404.html` (so `/about` and `/blog/...` work on GitHub Pages), and publish.
 
 ## License
 
