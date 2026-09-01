@@ -3,6 +3,7 @@ mod blog;
 mod header;
 mod intro;
 mod not_found;
+pub(crate) mod overlay;
 
 use crate::mouse::{HitMap, MouseState};
 use crate::router::{Route, Router};

@@ -42,6 +42,29 @@ mod tests {
     }
 
     #[test]
+    fn image_segments_round_trip() {
+        use crate::module::notion::{PostImage, PostSegment};
+        use std::collections::HashMap;
+
+        let snapshot = Snapshot {
+            saved_at: 1,
+            posts: HashMap::from([(
+                "aa".to_string(),
+                vec![PostSegment::Image(PostImage {
+                    src: "https://example.com/a.png".into(),
+                    alt: "a.png".into(),
+                    width: Some(10),
+                    height: Some(5),
+                })],
+            )]),
+            ..Snapshot::default()
+        };
+        let json = snapshot.to_json_compact().unwrap();
+        assert!(json.contains("Image"));
+        assert_eq!(Snapshot::parse(&json).unwrap(), snapshot);
+    }
+
+    #[test]
     fn has_content_detects_posts_or_about() {
         let empty = Snapshot::default();
         assert!(!empty.has_content());
