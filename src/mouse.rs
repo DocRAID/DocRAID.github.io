@@ -43,6 +43,26 @@ pub fn cell_height_px() -> f32 {
     METRICS.with(|slot| slot.borrow().cell_h)
 }
 
+pub fn cell_size_px() -> (f32, f32) {
+    METRICS.with(|slot| {
+        let metrics = *slot.borrow();
+        (metrics.cell_w, metrics.cell_h)
+    })
+}
+
+/// Viewport-relative CSS pixels of a cell `Rect`, using the measured grid.
+pub fn rect_css_px(area: Rect) -> (f32, f32, f32, f32) {
+    METRICS.with(|slot| {
+        let metrics = *slot.borrow();
+        (
+            metrics.origin_x + f32::from(area.x) * metrics.cell_w,
+            metrics.origin_y + f32::from(area.y) * metrics.cell_h,
+            f32::from(area.width) * metrics.cell_w,
+            f32::from(area.height) * metrics.cell_h,
+        )
+    })
+}
+
 /// Measure the Ratzilla `#grid` so hit-testing tracks zoom, font, and centering.
 pub fn refresh_cell_metrics() {
     let Some(metrics) = measure_grid() else {

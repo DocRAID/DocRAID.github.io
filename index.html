@@ -54,6 +54,26 @@
         font-synthesis: none;
         margin: 0px;
       }
+      #post-images {
+        position: fixed;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 5;
+      }
+      #post-images a {
+        position: absolute;
+        display: block;
+        pointer-events: auto;
+        cursor: pointer;
+      }
+      #post-images img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center;
+        display: block;
+        background-color: #1c1916;
+      }
     </style>
   </head>
   <body></body>

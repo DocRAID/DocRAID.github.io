@@ -28,7 +28,7 @@ thread_local! {
     static INTERVAL_STARTED: RefCell<bool> = const { RefCell::new(false) };
 }
 
-pub use notion::{same_page_id, tag_slug, ContentPage, PostSegment, TagSection};
+pub use notion::{same_page_id, tag_slug, ContentPage, PostImage, PostSegment, TagSection};
 
 pub fn current_tags() -> Vec<String> {
     catalog::current_tags()

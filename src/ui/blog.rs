@@ -1,11 +1,12 @@
+use super::overlay::{self, ImageSlot};
 use super::FrameCtx;
 use crate::content::{self, CatalogStatus};
-use crate::module::notion::PostSegment;
+use crate::module::notion::{PostImage, PostSegment};
 use crate::module::scraper::{same_page_id, tag_slug};
 use crate::mouse::{list_row_y, CellSpan};
 use crate::router::Router;
 use crate::theme;
-use crate::width::{display_width, wrapped_rows};
+use crate::width::{display_width, truncate_display, wrapped_rows};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -315,6 +316,9 @@ fn render_segments(
             PostSegment::Code(code) => {
                 render_code_block(ctx, frame, dest, code, skip);
             }
+            PostSegment::Image(image) => {
+                render_image_block(frame, dest, image, content_y, offset, body_area);
+            }
         }
     }
 
@@ -368,7 +372,62 @@ fn segment_height(segment: &PostSegment, width: u16) -> u16 {
         PostSegment::Code(code) => {
             wrapped_rows(code, width.saturating_sub(2).max(1)).saturating_add(2)
         }
+        PostSegment::Image(image) => image_inner_rows(width, image).saturating_add(2),
     }
+}
+
+const IMAGE_MIN_ROWS: u16 = 3;
+const IMAGE_MAX_ROWS: u16 = 24;
+
+fn image_inner_rows(width: u16, image: &PostImage) -> u16 {
+    let inner_w = width.saturating_sub(2).max(1);
+    let aspect = match (image.width, image.height) {
+        (Some(w), Some(h)) if w > 0 => h as f32 / w as f32,
+        _ => 9.0 / 16.0,
+    };
+    let (cell_w, cell_h) = crate::mouse::cell_size_px();
+    let height_px = f32::from(inner_w) * cell_w * aspect;
+    let rows = (height_px / cell_h.max(1.0)).ceil() as u16;
+    rows.clamp(IMAGE_MIN_ROWS, IMAGE_MAX_ROWS)
+}
+
+fn render_image_block(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    image: &PostImage,
+    content_y: u16,
+    offset: u16,
+    clip: Rect,
+) {
+    let title = if image.alt.is_empty() {
+        "image".to_string()
+    } else {
+        truncate_display(&image.alt, area.width.saturating_sub(4) as usize)
+    };
+    let style = Style::new().fg(theme::DIM).bg(theme::BG);
+    frame.render_widget(
+        Block::bordered()
+            .border_type(BorderType::Plain)
+            .border_style(style)
+            .title(title)
+            .style(style),
+        area,
+    );
+
+    let inner_h = image_inner_rows(clip.width, image);
+    let inner_w = clip.width.saturating_sub(2);
+    if inner_h == 0 || inner_w == 0 {
+        return;
+    }
+    overlay::push(ImageSlot {
+        src: image.src.clone(),
+        alt: image.alt.clone(),
+        clip,
+        x: 1,
+        y: i32::from(content_y) - i32::from(offset) + 1,
+        width: inner_w,
+        height: inner_h,
+    });
 }
 
 fn render_code_block(
@@ -444,9 +503,10 @@ fn format_post_label(title: &str, width: u16) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_post_label, segment_height};
+    use super::{format_post_label, image_inner_rows, segment_height};
     use crate::content::split_trailing_date;
-    use crate::module::notion::PostSegment;
+    use crate::module::notion::{PostImage, PostSegment};
+    use crate::ui::overlay;
     use ratatui::layout::Rect;
 
     #[test]
@@ -480,5 +540,54 @@ mod tests {
     fn text_height_includes_wrap() {
         let segment = PostSegment::Text("abcdefghij".into());
         assert_eq!(segment_height(&segment, 5), 2);
+    }
+
+    #[test]
+    fn image_height_uses_aspect_and_border() {
+        let image = PostImage {
+            src: "https://example.com/pic.png".into(),
+            alt: "pic.png".into(),
+            width: Some(676),
+            height: Some(312),
+        };
+        let inner = image_inner_rows(40, &image);
+        assert!(inner >= super::IMAGE_MIN_ROWS);
+        assert!(inner <= super::IMAGE_MAX_ROWS);
+        assert_eq!(
+            segment_height(&PostSegment::Image(image), 40),
+            inner.saturating_add(2)
+        );
+    }
+
+    #[test]
+    fn image_block_registers_overlay_slot() {
+        overlay::begin_frame();
+        let image = PostImage {
+            src: "https://example.com/pic.png".into(),
+            alt: "pic.png".into(),
+            width: Some(100),
+            height: Some(50),
+        };
+        let backend = ratatui::backend::TestBackend::new(40, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_image_block(
+                    frame,
+                    Rect::new(0, 2, 30, 8),
+                    &image,
+                    2,
+                    0,
+                    Rect::new(0, 0, 30, 20),
+                );
+            })
+            .unwrap();
+        let slots = overlay::slots();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].src, "https://example.com/pic.png");
+        assert_eq!(slots[0].x, 1);
+        assert_eq!(slots[0].y, 3);
+        assert_eq!(slots[0].width, 28);
+        overlay::begin_frame();
     }
 }

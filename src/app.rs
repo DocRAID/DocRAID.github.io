@@ -120,6 +120,7 @@ impl App {
     }
 
     fn paint(&self, frame: &mut Frame<'_>) -> bool {
+        crate::ui::overlay::begin_frame();
         let router = self.router.borrow();
         let mouse = self.mouse.borrow();
         let mut hits = self.hits.borrow_mut();
@@ -143,6 +144,7 @@ impl App {
             copied,
         };
         ui::render(&mut ctx, frame);
+        crate::ui::overlay::sync();
         *self.content_height.borrow_mut() = metrics.0;
         *self.viewport_height.borrow_mut() = metrics.1;
         let max = metrics.0.saturating_sub(metrics.1);
