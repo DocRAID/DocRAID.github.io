@@ -57,4 +57,6 @@ This project is licensed under the MIT license ([LICENSE] or <http://opensource.
 
 The bundled Fira Code Regular font is licensed under the SIL Open Font License 1.1.
 
+The bundled D2Coding Hangul subset is licensed under the SIL Open Font License 1.1 (NAVER Corporation, Reserved Font Name D2Coding).
+
 [LICENSE]: ./LICENSE

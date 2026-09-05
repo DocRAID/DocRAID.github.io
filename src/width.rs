@@ -80,4 +80,14 @@ mod tests {
         assert_eq!(wrapped_rows("ab\ncd", 10), 2);
         assert_eq!(wrapped_rows("", 10), 1);
     }
+
+    #[test]
+    fn wrap_counts_hangul_as_two_columns() {
+        assert_eq!(display_width("한글"), 4);
+        assert_eq!(super::char_width('한'), 2);
+        assert_eq!(super::char_width('ㄱ'), 2);
+        assert_eq!(wrapped_rows("한글", 2), 2);
+        assert_eq!(wrapped_rows("한글한글", 4), 2);
+        assert_eq!(wrapped_rows("한글", 4), 1);
+    }
 }

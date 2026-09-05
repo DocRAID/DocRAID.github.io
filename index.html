@@ -30,6 +30,17 @@
         font-style: normal;
         font-display: swap;
       }
+      @font-face {
+        font-family: "D2Coding";
+        src: url("/fonts/D2Coding-Hangul.woff2") format("woff2");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+        /* Hangul advance is 1em; Fira Code 2ch is ~1.23em at 16px. */
+        size-adjust: 123%;
+        unicode-range: U+1100-11FF, U+3000-303F, U+3130-318F, U+A960-A97F, U+AC00-D7A3,
+          U+D7B0-D7FF;
+      }
       html,
       body {
         margin: 0;
@@ -48,11 +59,19 @@
       }
       pre,
       pre span {
-        font-family: "Fira Code", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+        font-family: "Fira Code", "D2Coding", ui-monospace, "Cascadia Code", Menlo, Consolas,
+          monospace;
         font-size: 16px !important;
         font-weight: 400 !important;
         font-synthesis: none;
+        line-height: 20px;
         margin: 0px;
+        vertical-align: top;
+      }
+      pre {
+        height: 20px;
+        overflow: hidden;
+        white-space: pre;
       }
       #post-images {
         position: fixed;
@@ -76,5 +95,48 @@
       }
     </style>
   </head>
-  <body></body>
+  <body>
+    <script>
+      (() => {
+        const WIDE =
+          /[\u1100-\u11FF\u2E80-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uD7B0-\uD7FF\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+        const fix = () => {
+          const grid = document.getElementById("grid");
+          if (!grid) return;
+          for (const pre of grid.querySelectorAll("pre")) {
+            let hideNext = false;
+            for (const span of pre.querySelectorAll("span")) {
+              const text = span.textContent || "";
+              if (hideNext) {
+                if (span.style.display !== "none") span.style.display = "none";
+                hideNext = false;
+                continue;
+              }
+              if (WIDE.test(text)) {
+                if (span.style.width !== "2ch") {
+                  span.style.display = "inline-block";
+                  span.style.width = "2ch";
+                  span.style.overflow = "hidden";
+                  span.style.boxSizing = "content-box";
+                  span.style.textAlign = "center";
+                }
+                hideNext = true;
+              } else if (span.style.display === "none") {
+                span.style.display = "";
+              }
+            }
+          }
+        };
+        const start = () => {
+          new MutationObserver(fix).observe(document.body, {
+            subtree: true,
+            childList: true,
+          });
+          fix();
+        };
+        if (document.body) start();
+        else document.addEventListener("DOMContentLoaded", start);
+      })();
+    </script>
+  </body>
 </html>
