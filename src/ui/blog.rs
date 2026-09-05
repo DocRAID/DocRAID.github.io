@@ -486,19 +486,26 @@ fn copy_hit_span(area: Rect) -> Option<CellSpan> {
 
 /// Split `Title - date` so the date is shown as `(date)` on the right.
 fn format_post_label(title: &str, width: u16) -> String {
+    let width = width as usize;
+    if width == 0 {
+        return String::new();
+    }
     let Some((name, date)) = content::split_trailing_date(title) else {
-        return title.to_string();
+        return truncate_display(title, width);
     };
     let right = format!("({date})");
-    let name_w = display_width(name);
     let right_w = display_width(&right);
-    let width = width as usize;
-    if name_w + 1 + right_w >= width {
-        format!("{name} {right}")
-    } else {
-        let pad = width - name_w - right_w;
-        format!("{name}{:pad$}{right}", "")
+    if right_w >= width {
+        return truncate_display(&right, width);
     }
+    let name_budget = width.saturating_sub(right_w + 1);
+    let name_part = if display_width(name) <= name_budget {
+        name.to_string()
+    } else {
+        truncate_display(name, name_budget)
+    };
+    let pad = width.saturating_sub(display_width(&name_part) + right_w);
+    format!("{name_part}{:pad$}{right}", "")
 }
 
 #[cfg(test)]
@@ -532,14 +539,36 @@ mod tests {
         let label = format_post_label("TEST-contents - 2025.12.12", 40);
         assert!(label.starts_with("TEST-contents"));
         assert!(label.ends_with("(2025.12.12)"));
-        assert_eq!(label.chars().count(), 40);
+        assert_eq!(crate::width::display_width(&label), 40);
         assert!(!label.contains(" - "));
+    }
+
+    #[test]
+    fn korean_label_fits_display_width() {
+        let label = format_post_label("한글제목 - 2025.12.12", 24);
+        assert!(label.ends_with("(2025.12.12)"));
+        assert_eq!(crate::width::display_width(&label), 24);
+    }
+
+    #[test]
+    fn korean_label_truncates_long_titles() {
+        let label = format_post_label("한글제목이아주깁니다 - 2025.12.12", 18);
+        assert!(label.ends_with("(2025.12.12)"));
+        assert_eq!(crate::width::display_width(&label), 18);
+        assert!(label.contains('…'));
     }
 
     #[test]
     fn text_height_includes_wrap() {
         let segment = PostSegment::Text("abcdefghij".into());
         assert_eq!(segment_height(&segment, 5), 2);
+    }
+
+    #[test]
+    fn korean_text_height_counts_double_width() {
+        let segment = PostSegment::Text("한글한글".into());
+        assert_eq!(segment_height(&segment, 4), 2);
+        assert_eq!(segment_height(&segment, 8), 1);
     }
 
     #[test]

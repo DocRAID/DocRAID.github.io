@@ -84,11 +84,7 @@ fn measure_grid() -> Option<CellMetrics> {
         .flatten()
         .or_else(|| grid.first_element_child())?;
     let pre_rect = pre.get_bounding_client_rect();
-    let span = pre.query_selector("span").ok().flatten();
-    let cell_w = span
-        .map(|el| el.get_bounding_client_rect().width() as f32)
-        .filter(|w| *w > 1.0)
-        .unwrap_or(FALLBACK_CELL_WIDTH_PX);
+    let cell_w = ascii_cell_width(&pre).unwrap_or(FALLBACK_CELL_WIDTH_PX);
     let cell_h = if pre_rect.height() > 1.0 {
         pre_rect.height() as f32
     } else {
@@ -100,6 +96,21 @@ fn measure_grid() -> Option<CellMetrics> {
         cell_w,
         cell_h,
     })
+}
+
+fn ascii_cell_width(pre: &web_sys::Element) -> Option<f32> {
+    let mut child = pre.first_element_child();
+    while let Some(el) = child {
+        let text = el.text_content().unwrap_or_default();
+        if display_width(&text) == 1 {
+            let width = el.get_bounding_client_rect().width() as f32;
+            if width > 1.0 {
+                return Some(width);
+            }
+        }
+        child = el.next_element_sibling();
+    }
+    None
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
